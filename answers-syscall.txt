@@ -1,0 +1,4 @@
+usertrap
+7, SYS_exit
+User mode
+lw a3,0(zero), a3
