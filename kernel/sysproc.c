@@ -91,3 +91,18 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// Trace system call.
+uint64
+sys_trace(void)
+{
+  int trace_mark;
+  struct proc *current_proc;
+
+  argint(0, &trace_mark);
+
+  current_proc = myproc();
+  current_proc->trace_mark = trace_mark;
+
+  return 0;
+}
