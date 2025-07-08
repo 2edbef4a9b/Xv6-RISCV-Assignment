@@ -2,69 +2,66 @@
 #include "kernel/types.h"
 #include "user/user.h"
 
-#define EOF -1
-
-int
-getchar()
-{
-  char input_char;
-  if (read(STDIN_FILENO, &input_char, 1) != 1) {
-    return -1; // EOF or error.
-  }
-  return input_char;
-}
-
-int
-getarg(int max_length, char *buf)
-{
-  int input_char, length;
-  char *ptr = buf;
-
-  length = 0;
-  while ((input_char = getchar()) != EOF) {
-    if (input_char == '\n' || input_char == '\t' || input_char == '\r' || input_char == ' '
-        || length >= max_length - 1) {
-      break; // Stop on whitespace or reaching max length.
-    }
-    *ptr++ = (char)input_char;
-    length++;
-  }
-  *ptr = '\0'; // Null-terminate the string.
-  return input_char == EOF ? EOF : length;
-}
-
 int
 main(int argc, char *argv[])
 {
   const int MAX_LENGTH = 1024;
   char buf[MAX_LENGTH];
-  char *args[MAXARG];
-  int length, arg_index;
 
   if (argc < 2) {
     fprintf(2, "Usage: xargs <command> [args...]\n");
     exit(1);
   }
 
-  for (arg_index = 0; arg_index < argc - 1; arg_index++) {
-    args[arg_index] = argv[arg_index + 1];
-  }
+  while (gets(buf, MAX_LENGTH) > 0) {
+    char *args[MAXARG];
+    int arg_index, pid;
 
-  while ((length = getarg(MAX_LENGTH, buf)) != EOF) {
-    if (length == 0) {
-      continue; // Skip empty input.
+    if (buf[0] == '\0' || buf[0] == '\n') {
+      // No more input, exit the loop.
+      break;
     }
-    args[arg_index] = malloc(strlen(buf) + 1);
-    strcpy(args[arg_index], buf);
-    arg_index++;
-    if (arg_index >= MAXARG) {
-      fprintf(2, "xargs: too many arguments\n");
+
+    // Add base command arguments.
+    for (arg_index = 0; arg_index < argc - 1; arg_index++) {
+      args[arg_index] = argv[arg_index + 1];
+    }
+
+    char *arg, *ptr;
+    arg = buf;
+
+    // Parse the input buffer into arguments.
+    for (ptr = buf; *ptr != '\0'; ptr++) {
+      if (*ptr == ' ' || *ptr == '\n' || *ptr == '\r' || *ptr == '\t' || *ptr == '\0') {
+        *ptr = '\0';
+        if (arg < ptr) {
+          args[arg_index++] = arg;
+        }
+        arg = ptr + 1;
+      }
+    }
+
+    // Handle the last argument if it exists.
+    if (arg < ptr) {
+      args[arg_index++] = arg;
+    }
+    args[arg_index++] = 0; // Null-terminate the argument list.
+
+    // Fork a new process to execute the command.
+    pid = fork();
+    if (pid < 0) {
+      fprintf(STDERR_FILENO, "xargs: fork failed\n");
       exit(1);
+    } else if (pid == 0) {
+      // Child process.
+      exec(argv[1], args);
+      fprintf(STDERR_FILENO, "xargs: exec %s failed\n", argv[1]);
+      exit(1);
+    } else {
+      // Parent process.
+      wait(0);
     }
   }
-  args[arg_index++] = 0;
-  exec(argv[1], args);
-  fprintf(STDERR_FILENO, "xargs: exec %s failed\n", argv[1]);
 
   exit(0);
 }
