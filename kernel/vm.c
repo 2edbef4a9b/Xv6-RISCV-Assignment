@@ -488,9 +488,42 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 
 
 #ifdef LAB_PGTBL
+void print_pgtbl(pagetable_t pagetable, uint64 va_prefix, int table_level) {
+  if (pagetable == 0) {
+    return;
+  }
+  // There are 2^9 = 512 PTEs in a page table.
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      // Base case, lowest level page table.
+      for (int level = 0; level < table_level; level++) {
+        printf(" ..");
+      }
+      printf("0x%p: pte=0x%p, pa=0x%p\n",
+        (void *)(va_prefix + (i << PGSHIFT)),
+        (void *)pte,
+        (void *)PTE2PA(pte));
+    }
+    else if (pte & PTE_V) {
+      // Recursive case, this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      for (int level = 0; level < table_level; level++) {
+        printf(" ..");
+      }
+      printf("0x%p: pte=0x%p, pa=0x%p\n",
+        (void *)(va_prefix + (i << PGSHIFT)),
+        (void *)pte,
+        (void *)child);
+      print_pgtbl((pagetable_t)child, va_prefix + (i << PGSHIFT), table_level + 1);
+    }
+  }
+}
+
 void
 vmprint(pagetable_t pagetable) {
-  // your code here
+  printf("Page Table 0x%p:\n", pagetable);
+  print_pgtbl(pagetable, 0, 1);
 }
 #endif
 
