@@ -38,7 +38,7 @@ kvmmake(void)
 
   // pci.c maps the e1000's registers here.
   kvmmap(kpgtbl, 0x40000000L, 0x40000000L, 0x20000, PTE_R | PTE_W);
-#endif  
+#endif
 
   // PLIC
   kvmmap(kpgtbl, PLIC, PLIC, 0x4000000, PTE_R | PTE_W);
@@ -55,7 +55,7 @@ kvmmake(void)
 
   // allocate and map a kernel stack for each process.
   proc_mapstacks(kpgtbl);
-  
+
   return kpgtbl;
 }
 
@@ -193,7 +193,7 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 
   if (size == 0)
     panic("mappages: size");
-  
+
   a = va;
   last = va + size - PGSIZE;
   for (;;) {
@@ -254,22 +254,46 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   pte_t *pte;
   int sz;
 
-  if((va % PGSIZE) != 0)
+  if ((va % PGSIZE) != 0)
     panic("uvmunmap: not aligned");
 
-  for(a = va; a < va + npages*PGSIZE; a += sz){
+  for (a = va; a < va + npages * PGSIZE; a += sz) {
     sz = PGSIZE;
-    if((pte = walk(pagetable, a, 0)) == 0)
+    if ((pte = walk(pagetable, a, 0)) == 0) {
       panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0) {
+    }
+    if ((*pte & PTE_V) == 0) {
       printf("va=%ld pte=%ld\n", a, *pte);
       panic("uvmunmap: not mapped");
     }
-    if(PTE_FLAGS(*pte) == PTE_V)
+    if (PTE_FLAGS(*pte) == PTE_V) {
       panic("uvmunmap: not a leaf");
-    if(do_free){
+    }
+
+    // Check if the PTE is mapped to a superpage.
+    if ((a % SUPERPGSIZE) == 0) {
+      pte_t* spte = superwalk(pagetable, a, 0);
+      if (spte == pte) {
+        // This is a superpage mapping.
+        sz = SUPERPGSIZE;
+        if ((*pte & PTE_V) == 0) {
+          printf("va=%ld pte=%ld\n", a, *pte);
+          panic("uvmunmap: not mapped superpage");
+        }
+
+        if (do_free) {
+          uint64 pa = PTE2PA(*pte);
+          superfree((void *)pa);
+        }
+
+        *pte = 0; // invalidate the superpage PTE.
+        continue; // skip the rest of the loop for this superpage.
+      }
+    }
+
+    if (do_free) {
       uint64 pa = PTE2PA(*pte);
-      kfree((void*)pa);
+      kfree((void *)pa);
     }
     *pte = 0;
   }
@@ -332,17 +356,17 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
         return 0;
       }
     } else {
-    sz = PGSIZE;
-    mem = kalloc();
+      sz = PGSIZE;
+      mem = kalloc();
       if (mem == 0) {
-      uvmdealloc(pagetable, a, oldsz);
-      return 0;
-    }
-    memset(mem, 0, sz);
+        uvmdealloc(pagetable, a, oldsz);
+        return 0;
+      }
+      memset(mem, 0, sz);
       if (mappages(pagetable, a, sz, (uint64)mem, PTE_R | PTE_U | xperm) != 0) {
-      kfree(mem);
-      uvmdealloc(pagetable, a, oldsz);
-      return 0;
+        kfree(mem);
+        uvmdealloc(pagetable, a, oldsz);
+        return 0;
       }
     }
   }
@@ -412,26 +436,50 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
   int szinc;
 
-  for(i = 0; i < sz; i += szinc){
+  for (i = 0; i < sz; i += szinc) {
     szinc = PGSIZE;
-    szinc = PGSIZE;
-    if((pte = walk(old, i, 0)) == 0)
+    if ((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
+    if ((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+
+    // Check if the PTE is mapped to a superpage.
+    if ((i % SUPERPGSIZE) == 0) {
+      pte_t* spte = superwalk(old, i, 0);
+      if (spte == pte) {
+        // This is a superpage mapping.
+        szinc = SUPERPGSIZE;
+        if ((*pte & PTE_V) == 0) {
+          printf("i=%ld pte=%ld\n", i, *pte);
+          panic("uvmcopy: not mapped superpage");
+        }
+
+        pa = PTE2PA(*pte);
+        flags = PTE_FLAGS(*pte);
+        if ((mem = superalloc()) == 0)
+          goto err;
+        memmove(mem, (char *)pa, SUPERPGSIZE);
+        if (mapsuperpages(new, i, SUPERPGSIZE, (uint64)mem, flags) != 0) {
+          superfree(mem);
+          goto err;
+        }
+        continue; // skip the rest of the loop for this superpage.
+      }
+    }
+
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    if ((mem = kalloc()) == 0)
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    memmove(mem, (char *)pa, PGSIZE);
+    if (mappages(new, i, PGSIZE, (uint64)mem, flags) != 0) {
       kfree(mem);
       goto err;
     }
   }
   return 0;
 
- err:
+err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
@@ -442,7 +490,7 @@ void
 uvmclear(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte;
-  
+
   pte = walk(pagetable, va, 0);
   if (pte == 0)
     panic("uvmclear");
@@ -470,7 +518,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     // forbid copyout over read-only user text pages.
     if ((*pte & PTE_W) == 0)
       return -1;
-    
+
     pa0 = walkaddr(pagetable, va0);
     if (pa0 == 0)
       return -1;
@@ -493,7 +541,7 @@ int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
   uint64 n, va0, pa0;
-  
+
   while (len > 0) {
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
@@ -570,7 +618,7 @@ print_pgtbl(pagetable_t pagetable, uint64 va_prefix, int table_level)
         printf(" ..");
       }
       printf("0x%p: pte=0x%p, pa=0x%p\n", (void *)(va_prefix + (i << PGSHIFT)), (void *)pte,
-        (void *)PTE2PA(pte));
+             (void *)PTE2PA(pte));
     } else if (pte & PTE_V) {
       // Recursive case, this PTE points to a lower-level page table.
       uint64 child = PTE2PA(pte);
@@ -578,7 +626,7 @@ print_pgtbl(pagetable_t pagetable, uint64 va_prefix, int table_level)
         printf(" ..");
       }
       printf("0x%p: pte=0x%p, pa=0x%p\n", (void *)(va_prefix + (i << PGSHIFT)), (void *)pte,
-        (void *)child);
+             (void *)child);
       print_pgtbl((pagetable_t)child, va_prefix + (i << PGSHIFT), table_level + 1);
     }
   }
