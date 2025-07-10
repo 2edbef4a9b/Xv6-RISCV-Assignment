@@ -120,7 +120,6 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
 pte_t *
 superwalk(pagetable_t pagetable, uint64 va, int alloc)
 {
-  printf("superwalk: va=0x%lx alloc=%d\n", va, alloc);
   if (va >= MAXVA)
     panic("superwalk");
 
@@ -216,8 +215,6 @@ mapsuperpages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm
   uint64 a, last;
   pte_t *pte;
 
-  printf("mapsuperpages: va=0x%lx size=%ld pa=0x%lx perm=0x%x\n", va, size, pa, perm);
-
   if ((va % (SUPERPGSIZE)) != 0)
     panic("mapsuperpages: va not aligned");
 
@@ -272,7 +269,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
     // Check if the PTE is mapped to a superpage.
     if ((a % SUPERPGSIZE) == 0) {
-      pte_t* spte = superwalk(pagetable, a, 0);
+      pte_t *spte = superwalk(pagetable, a, 0);
       if (spte == pte) {
         // This is a superpage mapping.
         sz = SUPERPGSIZE;
@@ -445,7 +442,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
     // Check if the PTE is mapped to a superpage.
     if ((i % SUPERPGSIZE) == 0) {
-      pte_t* spte = superwalk(old, i, 0);
+      pte_t *spte = superwalk(old, i, 0);
       if (spte == pte) {
         // This is a superpage mapping.
         szinc = SUPERPGSIZE;

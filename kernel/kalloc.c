@@ -22,6 +22,7 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
+  struct run *super_freelist;
 } kmem;
 
 void
@@ -36,8 +37,14 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char *)PGROUNDUP((uint64)pa_start);
-  for (; p + PGSIZE <= (char *)pa_end; p += PGSIZE)
-    kfree(p);
+  for (; p + PGSIZE <= (char *)pa_end; p += PGSIZE) {
+    if ((((uint64)p % SUPERPGSIZE) == 0) && (p + SUPERPGSIZE <= (char *)pa_end)) {
+      superfree(p);
+      p += SUPERPGSIZE; // Skip the next 511 pages.
+    } else {
+      kfree(p);
+    }
+  }
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -68,26 +75,19 @@ kfree(void *pa)
 void
 superfree(void *pa)
 {
-  printf("superfree: freeing 2MB page at %p\n", pa);
-  struct run *curr, *next_page;
+  struct run *r;
 
-  if (((uint64)pa % (SUPERPGSIZE)) != 0 || (char *)pa < end || (uint64)pa >= PHYSTOP)
+  if (((uint64)pa % SUPERPGSIZE) != 0 || (char *)pa < end || (uint64)pa >= PHYSTOP)
     panic("superfree");
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, SUPERPGSIZE);
 
-  curr = (struct run *)pa;
+  r = (struct run *)pa;
 
   acquire(&kmem.lock);
-
-  // Traverse the pages to set the next pointers correctly.
-  for (int i = 511; i >= 0; i--) {
-    next_page = (struct run *)(curr + i * PGSIZE);
-    next_page->next = kmem.freelist;
-    kmem.freelist = next_page;
-  }
-
+  r->next = kmem.super_freelist;
+  kmem.super_freelist = r;
   release(&kmem.lock);
 }
 
@@ -116,46 +116,15 @@ kalloc(void)
 void *
 superalloc(void)
 {
-  printf("superalloc: allocating 2MB page\n");
-  struct run *curr, *prev, *start, *end;
+  struct run *r;
 
   acquire(&kmem.lock);
-
-  // Traverse the freelist to find a free 2MB page.
-  prev = start = end = (void *)0;
-  for (curr = kmem.freelist; curr; curr = curr->next) {
-    if (((uint64)curr & ((1 << 21) - 1)) == 0) {
-      start = curr;
-      for (int i = 0; i < 512; i++) {
-        if (!(curr->next == curr + PGSIZE)) {
-          // The next page is not contiguous.
-          break;
-        }
-        curr = curr->next;
-      }
-      if (curr - start == SUPERPGSIZE) {
-        end = curr;
-        break; // Found a contiguous block of 512 pages (2MB).
-      }
-    }
-    prev = curr;
-  }
-
-  if (end) {
-    // Remove the found block from the freelist.
-    if (prev) {
-      prev->next = end->next;
-    } else {
-      kmem.freelist = end->next;
-    }
-  }
-
+  r = kmem.super_freelist;
+  if (r)
+    kmem.super_freelist = r->next;
   release(&kmem.lock);
 
-  if (end) {
-    // Fill with junk to catch dangling refs.
-    memset((char *)start, 5, SUPERPGSIZE);
-  }
-
-  return (void *)start;
+  if (r)
+    memset((char *)r, 5, SUPERPGSIZE);
+  return (void *)r;
 }
