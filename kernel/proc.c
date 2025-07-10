@@ -232,7 +232,13 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
-  uvmunmap(pagetable, USYSCALL, 1, 0);
+
+  // If the process has a USYSCALL page, unmap it.
+  pte_t *pte = walk(pagetable, USYSCALL, 0);
+  if (pte && (*pte & PTE_V)) {
+    uvmunmap(pagetable, USYSCALL, 1, 0);
+  }
+
   uvmfree(pagetable, sz);
 }
 
