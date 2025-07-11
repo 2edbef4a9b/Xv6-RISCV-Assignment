@@ -14,6 +14,13 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+// Reference counting for physical pages.
+struct {
+  struct spinlock lock;
+  int count[(PHYSTOP - KERNBASE) / PGSIZE];
+} refcount;
+
+
 struct run {
   struct run *next;
 };
@@ -27,6 +34,7 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&refcount.lock, "refcount");
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -35,8 +43,19 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
-    kfree(p);
+  acquire(&kmem.lock);
+  acquire(&refcount.lock);
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE) {
+    struct run *r = (struct run*)p;
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+
+    // Initialize reference count to 0.
+    int index = ((uint64)p - KERNBASE) / PGSIZE;
+    refcount.count[index] = 0;
+  }
+  release(&refcount.lock);
+  release(&kmem.lock);
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -50,6 +69,15 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+
+  int index = ((uint64)pa - KERNBASE) / PGSIZE;
+  acquire(&refcount.lock);
+  refcount.count[index]--;
+  if (refcount.count[index] > 0) {
+    release(&refcount.lock);
+    return; // Don't free if there are still references.
+  }
+  release(&refcount.lock);
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
@@ -76,7 +104,16 @@ kalloc(void)
     kmem.freelist = r->next;
   release(&kmem.lock);
 
-  if(r)
+  if(r){
     memset((char*)r, 5, PGSIZE); // fill with junk
+    int index = ((uint64)r - KERNBASE) / PGSIZE;
+    acquire(&refcount.lock);
+    if (refcount.count[index] != 0) {
+      release(&refcount.lock);
+      panic("kalloc: page already allocated");
+    }
+    refcount.count[index] = 1;
+    release(&refcount.lock);
+  }
   return (void*)r;
 }
