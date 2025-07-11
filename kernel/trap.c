@@ -77,8 +77,22 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    // Update the process's alarm state.
+    if(p->alarm_ticks > 0) {
+      p->alarm_left--;
+      if(p->alarm_left <= 0 && !p->in_handler) {
+        // Save the current trapframe to old_trapframe.
+        memmove(p->old_trapframe, p->trapframe, sizeof(struct trapframe));
+        p->trapframe->epc = (uint64)p->alarm_handler;
+        p->in_handler = 1; // Indicate that we are in the alarm handler.
+        
+        // Reset the left ticks for the next alarm.
+        p->alarm_left = p->alarm_ticks;
+      }
+    }
     yield();
+  }
 
   usertrapret();
 }

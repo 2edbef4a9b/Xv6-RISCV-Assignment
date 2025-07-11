@@ -93,3 +93,38 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_sigalarm(void)
+{
+  int ticks;
+  void (*handler)();
+
+  argint(0, &ticks);
+  if (ticks < 0) {
+    return -1;
+  }
+
+  argaddr(1, (uint64 *)&handler);
+  if (ticks == 0) {
+     // Disable alarm.
+    myproc()->alarm_ticks = 0;
+    myproc()->alarm_left = 0;
+    myproc()->alarm_handler = 0;
+  } else {
+    myproc()->alarm_ticks = ticks;
+    myproc()->alarm_left = ticks;
+    myproc()->alarm_handler = handler;    
+  }
+
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  // Restore the trapframe from the saved storage.
+  memmove(myproc()->trapframe, myproc()->old_trapframe, sizeof(struct trapframe));
+  myproc()->in_handler = 0; // Clear in_handler flag.
+  return myproc()->trapframe->a0;
+}
