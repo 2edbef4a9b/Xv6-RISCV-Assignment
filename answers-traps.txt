@@ -1,0 +1,83 @@
+1\. Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+
+> In RISC-V, the first eight integer arguments are passed in registers `a0` to `a7`, the first eight floating-point arguments in `fa0` to `fa7`. If there are more than eight arguments, the additional ones are passed on the stack, and can be accessed using the frame pointer (`s0` in this case).
+
+> In the `main` function, the value `13` is loaded into register `a2` before the call to `printf`. Thus `a2` contains the value `13`.
+
+2\. Where is the call to function `f` in the assembly code for `main`? Where is the call to `g`? (Hint: the compiler may inline functions.)
+
+> The compiler has inlined the function `f` and `g`, so there are no explicit calls to `f` or `g` in the assembly code. The instruction `li a1,12` loads the results of `f(8) + 1` directly into `a1`, and the instruction `addiw a0,a0,3` inlines the call to `g`.
+
+3\. At what address is the function `printf` located?
+
+```assembly
+00000000000006fe <printf>:
+
+void
+printf(const char *fmt, ...)
+
+...
+```
+
+> The function `printf` is located at address `0x00000000000006fe`.
+
+4\. What value is in the register `ra` just after the `jalr` to `printf` in `main`?
+
+```assembly
+0000000000000042 <start>:
+//
+// wrapper so that it's OK if main() does not call exit().
+//
+void
+start()
+{
+  42: 1141                 addi sp,sp,-16
+  44: e406                 sd ra,8(sp)
+  46: e022                 sd s0,0(sp)
+  48: 0800                 addi s0,sp,16
+  extern int main();
+  main();
+  4a: fdbff0ef           jal 24 <main>
+  exit(0);
+  4e: 4501                 li a0,0
+  50: 27e000ef           jal 2ce <exit>
+```
+
+> The register `ra` contains the return address. After calling `printf`, `ra` will hold the address of the instruction immediately following the `jal` to `printf`. In this case, it will be the address of the instruction `li a0, 0`, which is `0x000000000000003c`.
+
+5\. Run the following code.
+
+```c
+    unsigned int i = 0x00646c72;
+    printf("H%x Wo%s", 57616, (char *) &i);
+```
+
+What is the output? Here's an ASCII table that maps bytes to characters.
+
+> The output of the code will be:
+
+```
+HE110 World
+```
+
+The output depends on that fact that the RISC-V is little-endian. If the RISC-V were instead big-endian what would you set `i` to in order to yield the same output? Would you need to change `57616` to a different value?
+
+> In big-endian, you would set `i` to `0x726c6400` to yield the same output. The value `57616` does not need to change, as it is independent of the endianness.
+
+6\. In the following code, what is going to be printed after 'y='? (note: the answer is not a specific value.) Why does this happen?
+
+```c
+    printf("x=%d y=%d", 3);
+```
+
+> The output after 'y=' will be an undefined value. This happens because the `printf` function expects two integer arguments based on the format string `"x=%d y=%d"`, but only one argument (`3`) is provided.
+
+Looking at the assembly code for printf:
+
+* The function allocates stack space and saves registers (`ra`, `s0`).
+* It saves the initial argument registers `a1` through `a7` to the stack, relative to `s0`. In this case, `a1` contains `3`, and `a2` contains whatever value was in that register when `printf` was called.
+* The `va_start` part sets up the `va_list` (`ap`) to point to the location on the stack where the first variable argument (`a1`, which is `3`) was saved (`s0 + 8`).
+* `vprintf` is then called with the format string and the `va_list`.
+* `vprintf` reads the first `%d` and retrieves the value `3` from the location pointed to by `ap` (`s0 + 8`).
+* `vprintf` then reads the second `%d` and attempts to retrieve the next argument from the location immediately following the first argument in the `va_list's` view of the stack, which is `s0 + 16`.
+* The value stored at `s0 + 16` is the original content of the `a2` register when `printf` was called. Since no second argument was provided in the C code, the value in `a2` is whatever happened to be there from previous operations. This value is not defined or predictable.
