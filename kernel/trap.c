@@ -46,10 +46,10 @@ usertrap(void)
   w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
-  
+
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
+
   if(r_scause() == 8){
     // system call
 
@@ -111,7 +111,7 @@ usertrapret(void)
 
   // set up the registers that trampoline.S's sret will use
   // to get to user space.
-  
+
   // set S Previous Privilege mode to User.
   unsigned long x = r_sstatus();
   x &= ~SSTATUS_SPP; // clear SPP to 0 for user mode
@@ -124,7 +124,7 @@ usertrapret(void)
   // tell trampoline.S the user page table to switch to.
   uint64 satp = MAKE_SATP(p->pagetable);
 
-  // jump to userret in trampoline.S at the top of memory, which 
+  // jump to userret in trampoline.S at the top of memory, which
   // switches to the user page table, restores user registers,
   // and switches to user mode with sret.
   uint64 trampoline_userret = TRAMPOLINE + (userret - trampoline);
@@ -133,14 +133,14 @@ usertrapret(void)
 
 // interrupts and exceptions from kernel code go here via kernelvec,
 // on whatever the current kernel stack is.
-void 
+void
 kerneltrap()
 {
   int which_dev = 0;
   uint64 sepc = r_sepc();
   uint64 sstatus = r_sstatus();
   uint64 scause = r_scause();
-  
+
   if((sstatus & SSTATUS_SPP) == 0)
     panic("kerneltrap: not from supervisor mode");
   if(intr_get() != 0)
@@ -221,25 +221,34 @@ devintr()
 int
 handle_cow()
 {
-  // printf("handle_cow: page fault at 0x%lx\n", r_stval());
+  int ref_count;
+  uint64 pa_old;
+  pte_t *pte;
+
   struct proc *p = myproc();
   uint64 stval = r_stval();
-  pte_t *pte = walk(p->pagetable, stval, 0);
-  uint64 pa_old = PTE2PA(*pte);
-  int ref_count = krefget((void*)pa_old);
-  
-  if(!pte || (*pte & PTE_COW) == 0){
+
+  if(stval >= MAXVA) {
+    // Invalid address.
+    return -1;
+  }
+
+  pte = walk(p->pagetable, stval, 0);
+
+  if(!pte || (*pte & PTE_COW) == 0) {
     // Not a COW page fault.
     printf("handle_cow: not a COW page fault at 0x%lx\n", stval);
     return -1;
   }
 
-  if(ref_count < 1){
+  pa_old = PTE2PA(*pte);
+  ref_count = krefget((void *)pa_old);
+
+  if(ref_count < 1) {
     panic("handle_cow: invalid ref count for COW page");
   }
-  if (ref_count == 1){
+  if(ref_count == 1) {
     // Only one reference, so we can just write to the page.
-    // printf("handle_cow: writing to COW page at 0x%lx\n", stval);
     *pte &= ~PTE_COW; // Clear the COW flag.
     *pte |= PTE_W;    // Set write permission.
     return 0;
@@ -254,7 +263,7 @@ handle_cow()
   }
 
   // Copy the contents of the old page to the new page.
-  if (memmove(new_page, (void*)pa_old, PGSIZE) == 0) {
+  if(memmove(new_page, (void *)pa_old, PGSIZE) == 0){
     // Failed to copy the page.
     printf("handle_cow: failed to copy COW page at 0x%lx\n", stval);
     kfree(new_page);
@@ -264,11 +273,11 @@ handle_cow()
   // Update the page table entry to point to the new page.
   pte_t new_pte = PA2PTE(new_page) | PTE_FLAGS(*pte);
   new_pte &= ~PTE_COW; // Clear the COW flag.
-  new_pte |= PTE_W; // Set write permission.
+  new_pte |= PTE_W;    // Set write permission.
   *pte = new_pte;
 
   // Call kfree to decrement the reference count of the old page.
-  kfree((void*)pa_old);
+  kfree((void *)pa_old);
 
   return 0;
 }
