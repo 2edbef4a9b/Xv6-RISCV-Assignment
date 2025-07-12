@@ -1,3 +1,5 @@
+#include "spinlock.h"
+
 //
 // endianness support
 //
@@ -125,3 +127,29 @@ struct dns_data {
   uint32 ttl;
   uint16 len;
 } __attribute__((packed));
+
+
+//
+// Socket and ports limits
+//
+
+#define MAX_PORTS 65536  // Maximum number of ports.
+#define MAX_SOCKETS 32 // Maximum number of sockets.
+#define RX_QUEUE_SIZE 16 // Maximum number of packets in the receive queue.
+
+struct rx_queue {
+  int head;                   // Head index for the receive queue.
+  int tail;                   // Tail index for the receive queue.
+  int count;                  // Number of packets in the queue.
+  char *queue[RX_QUEUE_SIZE]; // Receive queue for incoming packets.
+  struct spinlock lock;       // Spinlock for synchronizing access to the queue.
+};
+
+struct socket {
+  uint8 type;                 // Socket protocol type (e.g., UDP).
+  uint16 local_port;          // Local port number.
+  uint32 local_ip;            // Local IP address.
+  uint16 remote_port;         // Remote port number.
+  uint32 remote_ip;           // Remote IP address.
+  struct rx_queue *rx_queue;     // Pointer to the receive queue.
+};

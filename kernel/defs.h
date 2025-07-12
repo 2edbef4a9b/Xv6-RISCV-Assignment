@@ -235,5 +235,7 @@ int             e1000_transmit(char *, int);
 // net.c
 void            netinit(void);
 void            net_rx(char *buf, int len);
+void *          allocsock(uint8 type, uint16 local_port, uint32 local_ip);
+void            freesock(uint16 local_port);
 
 #endif

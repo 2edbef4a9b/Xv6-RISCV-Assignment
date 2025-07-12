@@ -17,12 +17,27 @@ static uint32 local_ip = MAKE_IP_ADDR(10, 0, 2, 15);
 // qemu host's ethernet address.
 static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
+// Bitmap for bound ports.
+static uint64 bindmap[65536 / sizeof(uint64)];
+
+// Array of sockets.
+static struct socket sockets[MAX_SOCKETS];
+
+// Locks.
+static struct spinlock bindmap_lock;
+static struct spinlock sockets_lock;
 static struct spinlock netlock;
+
 
 void
 netinit(void)
 {
+  initlock(&bindmap_lock, "bindmap_lock");
+  initlock(&sockets_lock, "sockets_lock");
   initlock(&netlock, "netlock");
+  for(int i = 0; i < MAX_SOCKETS; i++){
+    initlock(&sockets[i].rx_queue->lock, "rx_queue_lock"); 
+  }
 }
 
 
@@ -37,8 +52,29 @@ sys_bind(void)
   //
   // Your code here.
   //
+  int port;
+  argint(0, &port);
 
-  return -1;
+  if (port < 0 || port >= MAX_PORTS) {
+    printf("bind: invalid port %d\n", port);
+    return -1;
+  }
+
+  acquire(&bindmap_lock);
+  if (bindmap[port / sizeof(uint64)] & (1U << (port % sizeof(uint64)))) {
+    release(&bindmap_lock);
+    printf("bind: port %d already bound\n", port);
+    return -1;
+  }
+
+  bindmap[port / sizeof(uint64)] |= (1U << (port % sizeof(uint64)));
+  release(&bindmap_lock);
+
+  // Allocate a socket for the port.
+  // For simplicity, we assume the socket's protocol type is UDP.
+  allocsock(IPPROTO_UDP, port, local_ip);
+
+  return 0;
 }
 
 //
@@ -52,6 +88,26 @@ sys_unbind(void)
   //
   // Optional: Your code here.
   //
+  int port;
+  argint(0, &port);
+
+  if (port < 0 || port >= MAX_PORTS) {
+    printf("unbind: invalid port %d\n", port);
+    return -1;
+  }
+
+  acquire(&bindmap_lock);
+  if (!(bindmap[port / sizeof(uint64)] & (1U << (port % sizeof(uint64))))) {
+    release(&bindmap_lock);
+    printf("unbind: port %d not bound\n", port);
+    return -1;
+  }
+
+  bindmap[port / sizeof(uint64)] &= ~(1U << (port % sizeof(uint64)));
+  release(&bindmap_lock);
+
+  // Free the socket associated with the port.
+  freesock(port);
 
   return 0;
 }
@@ -179,6 +235,8 @@ sys_send(void)
   return 0;
 }
 
+//
+// receive an IP packet.
 void
 ip_rx(char *buf, int len)
 {
@@ -191,7 +249,45 @@ ip_rx(char *buf, int len)
   //
   // Your code here.
   //
+  uint16 dport;
+  uint8 protocol;
+  struct socket *sock;
+  int sock_idx;
+
+  if(len < sizeof(struct eth) + sizeof(struct ip) || len > PGSIZE){
+    printf("ip_rx: invalid packet length %d\n", len);
+    kfree(buf);
+    return;
+  }
+
+  struct eth *ineth = (struct eth *) buf;
+  struct ip *inip = (struct ip *)(ineth + 1);
+
+  dport = ntohs(inip->ip_dst);
+  protocol = inip->ip_p;
+
+  if(protocol != IPPROTO_UDP){
+    printf("ip_rx: Only UDP packets are supported\n");
+    kfree(buf);
+    return;
+  }
+
+  acquire(&bindmap_lock);
+  if(!(bindmap[dport / sizeof(uint64)] & (1U << (dport % sizeof(uint64))))){
+    release(&bindmap_lock);
+    printf("ip_rx: No socket bound to port %d\n", dport);
+    kfree(buf);
+    return;
+  }
+  release(&bindmap_lock);
   
+  // Find the socket for the destination port.
+  for(sock_idx = 0; sock_idx < MAX_SOCKETS; sock_idx++){
+    sock = &sockets[sock_idx];
+    if(sock->type == IPPROTO_UDP && sock->local_port == dport){
+      break;
+    }
+  }
 }
 
 //
@@ -256,4 +352,75 @@ net_rx(char *buf, int len)
   } else {
     kfree(buf);
   }
+}
+
+void *
+allocsock(uint8 type, uint16 local_port, uint32 local_ip)
+{
+  struct socket *sock;
+  int sock_idx;
+
+  acquire(&sockets_lock);
+  for(sock_idx = 0; sock_idx < MAX_SOCKETS; sock_idx++){
+    sock = &sockets[sock_idx];
+    if(sock->type == 0){
+      // socket is free.
+      sock->type = type;
+      sock->local_port = local_port;
+      sock->local_ip = local_ip;
+      sock->remote_port = 0;
+      sock->remote_ip = 0;
+      sock->rx_queue = 0;
+      release(&sockets_lock);
+      return sock;
+    }
+  }
+  release(&sockets_lock);
+  return 0; // No free socket found.
+}
+
+void
+freesock(uint16 local_port)
+{
+  struct socket *sock;
+  char *buf;
+  int sock_idx, queue_idx;
+
+  acquire(&sockets_lock);
+  for(sock_idx = 0; sock_idx < MAX_SOCKETS; sock_idx++){
+    sock = &sockets[sock_idx];
+    if(sock->local_port == local_port){
+      // Found the socket to free.
+      sock->type = 0; // Mark the socket as free.
+      sock->local_port = 0;
+      sock->local_ip = 0;
+      sock->remote_port = 0;
+      sock->remote_ip = 0;
+      if(sock->rx_queue) {
+        // Free the receive queue if it exists.
+        acquire(&sock->rx_queue->lock);
+
+        // Free all packets in the receive queue.
+        while(sock->rx_queue->count > 0){
+          queue_idx = sock->rx_queue->head;
+          buf = sock->rx_queue->queue[queue_idx];
+          kfree(buf);
+          sock->rx_queue->queue[queue_idx] = 0;
+          sock->rx_queue->count--;
+          queue_idx = (queue_idx + 1) % RX_QUEUE_SIZE;
+        }
+
+        // Reset the receive queue.
+        sock->rx_queue->count = 0;
+        sock->rx_queue->head = 0;
+        sock->rx_queue->tail = 0;
+        sock->rx_queue = 0;
+
+        release(&sock->rx_queue->lock);
+      }
+      release(&sockets_lock);
+      return;
+    }
+  }
+  release(&sockets_lock);
 }
