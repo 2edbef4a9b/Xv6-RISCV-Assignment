@@ -315,7 +315,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -323,21 +322,53 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+
+    // Copy on write.
+    if (*pte & PTE_W) {
+      *pte &= ~PTE_W;
+      *pte |= PTE_COW;
+    }
+    krefinc((void *)pa);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+
+    // Copy the page table entry to the new page table.
+    if (mappages(new, i, PGSIZE, pa, flags) != 0){
+      uvmunmap(new, 0, i / PGSIZE, 1);
+      return -1;
     }
   }
   return 0;
-
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
-  return -1;
 }
+
+// int
+// uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+// {
+//   pte_t *pte;
+//   uint64 pa, i;
+//   uint flags;
+//   char *mem;
+
+//   for(i = 0; i < sz; i += PGSIZE) {
+//     if((pte = walk(old, i, 0)) == 0)
+//       panic("uvmcopy: pte should exist");
+//     if((*pte & PTE_V) == 0)
+//       panic("uvmcopy: page not present");
+//     pa = PTE2PA(*pte);
+//     flags = PTE_FLAGS(*pte);
+//     if((mem = kalloc()) == 0)
+//       goto err;
+//     memmove(mem, (char *)pa, PGSIZE);
+//     if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0) {
+//       kfree(mem);
+//       goto err;
+//     }
+//   }
+//   return 0;
+
+// err:
+//   uvmunmap(new, 0, i / PGSIZE, 1);
+//   return -1;
+// }
 
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
@@ -360,15 +391,53 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
   pte_t *pte;
+  int ref_count;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)
       return -1;
     pte = walk(pagetable, va0, 0);
-    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
-       (*pte & PTE_W) == 0)
+    if(pte == 0 || (*pte & PTE_V) == 0 || ((*pte & PTE_U) == 0) ||
+      (((*pte & PTE_W) == 0) && ((*pte & PTE_COW) == 0)))
       return -1;
+
+    if (*pte & PTE_COW) {
+      pa0 = PTE2PA(*pte);
+      ref_count = krefget((void*)pa0);
+
+      if(ref_count < 1){
+        panic("copyout: invalid ref count for COW page");
+      }
+      if (ref_count == 1){
+        // Only one reference, so we can just write to the page.
+        *pte &= ~PTE_COW; // Clear the COW flag.
+        *pte |= PTE_W;    // Set write permission.
+      } else {
+        // Allocate a new page.
+        void *new_page = kalloc();
+        if(!new_page){
+          // Out of memory.
+          panic("copyout: out of memory for COW page");
+        }
+
+        // Copy the contents of the old page to the new page.
+        if (memmove(new_page, (void*)pa0, PGSIZE) == 0) {
+          // Failed to copy the page.
+          kfree(new_page);
+          return -1;
+        }
+
+        // Update the page table entry to point to the new page.
+        pte_t new_pte = PA2PTE(new_page) | PTE_FLAGS(*pte);
+        new_pte &= ~PTE_COW; // Clear the COW flag.
+        new_pte |= PTE_W; // Set write permission.
+        *pte = new_pte;
+
+        // Call kfree to decrement the reference count of the old page.
+        kfree((void*)pa0);
+      }
+    }
     pa0 = PTE2PA(*pte);
     n = PGSIZE - (dstva - va0);
     if(n > len)

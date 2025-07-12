@@ -67,6 +67,8 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 0x0F && handle_cow() == 0){
+    // ok if this is a COW page fault.
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
@@ -216,3 +218,57 @@ devintr()
   }
 }
 
+int
+handle_cow()
+{
+  // printf("handle_cow: page fault at 0x%lx\n", r_stval());
+  struct proc *p = myproc();
+  uint64 stval = r_stval();
+  pte_t *pte = walk(p->pagetable, stval, 0);
+  uint64 pa_old = PTE2PA(*pte);
+  int ref_count = krefget((void*)pa_old);
+  
+  if(!pte || (*pte & PTE_COW) == 0){
+    // Not a COW page fault.
+    printf("handle_cow: not a COW page fault at 0x%lx\n", stval);
+    return -1;
+  }
+
+  if(ref_count < 1){
+    panic("handle_cow: invalid ref count for COW page");
+  }
+  if (ref_count == 1){
+    // Only one reference, so we can just write to the page.
+    // printf("handle_cow: writing to COW page at 0x%lx\n", stval);
+    *pte &= ~PTE_COW; // Clear the COW flag.
+    *pte |= PTE_W;    // Set write permission.
+    return 0;
+  }
+
+  // Allocate a new page.
+  void *new_page = kalloc();
+  if(!new_page){
+    // Out of memory.
+    printf("handle_cow: out of memory for COW page at 0x%lx\n", stval);
+    return -1;
+  }
+
+  // Copy the contents of the old page to the new page.
+  if (memmove(new_page, (void*)pa_old, PGSIZE) == 0) {
+    // Failed to copy the page.
+    printf("handle_cow: failed to copy COW page at 0x%lx\n", stval);
+    kfree(new_page);
+    return -1;
+  }
+
+  // Update the page table entry to point to the new page.
+  pte_t new_pte = PA2PTE(new_page) | PTE_FLAGS(*pte);
+  new_pte &= ~PTE_COW; // Clear the COW flag.
+  new_pte |= PTE_W; // Set write permission.
+  *pte = new_pte;
+
+  // Call kfree to decrement the reference count of the old page.
+  kfree((void*)pa_old);
+
+  return 0;
+}
