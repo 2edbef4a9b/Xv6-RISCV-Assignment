@@ -101,7 +101,36 @@ e1000_transmit(char *buf, int len)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after send completes.
   //
+  printf("transmit: transmitting %d bytes at %p\n", len, buf);
+  uint64 tx_idx;
 
+  acquire(&e1000_lock);
+  tx_idx = regs[E1000_TDT];
+  // Check if the TX ring is overflowing.
+  if ((tx_ring[tx_idx].status & E1000_TXD_STAT_DD) == 0) {
+    printf("transmit: TX ring is overflowing\n");
+    release(&e1000_lock);
+    return -1;
+  }
+
+  // Free the previous buffer if it exists.
+  if (tx_bufs[tx_idx]) {
+    kfree(tx_bufs[tx_idx]);
+    tx_bufs[tx_idx] = buf;
+  }
+
+  // [E1000 3.3] Set up the TX descriptor.
+  tx_ring[tx_idx].addr = (uint64)buf;
+  tx_ring[tx_idx].length = len;
+  tx_ring[tx_idx].cso = 0;
+  tx_ring[tx_idx].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+  tx_ring[tx_idx].status = 0;
+  tx_ring[tx_idx].css = 0;
+  tx_ring[tx_idx].special = 0;
+
+  // Update the TDT (Transmit Descriptor Tail) register.
+  regs[E1000_TDT] = (tx_idx + 1) % TX_RING_SIZE;
+  release(&e1000_lock);
   
   return 0;
 }
@@ -115,7 +144,32 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver a buf for each packet (using net_rx()).
   //
+  printf("recv: checking for received packets\n");
+  uint64 rx_idx;
+  char *buf;
 
+  rx_idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+  while (rx_ring[rx_idx].status & E1000_RXD_STAT_DD) {
+    // Deliver the packet buffer to the network stack.
+    net_rx(rx_bufs[rx_idx], rx_ring[rx_idx].length);
+
+    // Allocate a buffer for the received packet.
+    buf = kalloc();
+    if(!buf) {
+      printf("recv: failed to allocate buffer\n");
+      break;
+    }
+    rx_bufs[rx_idx] = buf;
+
+    // Clear the status of the RX descriptor.
+    rx_ring[rx_idx].status = 0;
+
+    // Update the RDT (Receive Descriptor Tail) register.
+    regs[E1000_RDT] = rx_idx;
+
+    // Advance to the next RX descriptor.
+    rx_idx = (rx_idx + 1) % RX_RING_SIZE;
+  }
 }
 
 void
