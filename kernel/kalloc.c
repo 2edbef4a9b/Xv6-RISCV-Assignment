@@ -141,6 +141,7 @@ krefinc(void *pa)
   release(&kref.lock);
 }
 
+// Get the reference count for a physical page.
 int
 krefget(void *pa)
 {
