@@ -145,11 +145,20 @@ struct rx_queue {
   struct spinlock lock;       // Spinlock for synchronizing access to the queue.
 };
 
+// For simplicity, remote IP addresses, remote ports, and other fields
+// are not used in this implementation, but they can be added later if needed.
 struct socket {
-  uint8 type;                 // Socket protocol type (e.g., UDP).
-  uint16 local_port;          // Local port number.
-  uint32 local_ip;            // Local IP address.
-  uint16 remote_port;         // Remote port number.
-  uint32 remote_ip;           // Remote IP address.
-  struct rx_queue *rx_queue;     // Pointer to the receive queue.
+  uint8 type;                // Socket protocol type (e.g., UDP).
+  uint16 local_port;         // Local port number.
+  uint32 local_ip;           // Local IP address.
+  struct rx_queue *rx_queue; // Pointer to the receive queue.
 };
+
+void
+udp_rx(char *buf, int len, struct ip *inip);
+void
+icmp_rx(char *buf, int len, struct ip *inip);
+void *
+allocsock(uint8 type, uint16 local_port, uint32 local_ip);
+void
+freesock(uint16 local_port);

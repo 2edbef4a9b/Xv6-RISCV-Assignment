@@ -35,9 +35,6 @@ netinit(void)
   initlock(&bindmap_lock, "bindmap_lock");
   initlock(&sockets_lock, "sockets_lock");
   initlock(&netlock, "netlock");
-  for(int i = 0; i < MAX_SOCKETS; i++){
-    initlock(&sockets[i].rx_queue->lock, "rx_queue_lock"); 
-  }
 }
 
 
@@ -54,6 +51,8 @@ sys_bind(void)
   //
   int port;
   argint(0, &port);
+
+  printf("bind: binding port %d\n", port);
 
   if (port < 0 || port >= MAX_PORTS) {
     printf("bind: invalid port %d\n", port);
@@ -90,6 +89,8 @@ sys_unbind(void)
   //
   int port;
   argint(0, &port);
+
+  printf("unbind: unbinding port %d\n", port);
 
   if (port < 0 || port >= MAX_PORTS) {
     printf("unbind: invalid port %d\n", port);
@@ -133,7 +134,78 @@ sys_recv(void)
   //
   // Your code here.
   //
-  return -1;
+  int dport, maxlen, sock_idx;
+  char *packet;
+  uint64 copied_bytes, payload_len, src, sport, buf;
+  struct socket *sock;
+  struct eth *recv_eth;
+  struct ip *recv_ip;
+  struct udp *recv_udp;
+  struct proc *p = myproc();
+
+  argint(0, &dport);
+  argaddr(1, &src);
+  argaddr(2, &sport);
+  argaddr(3, &buf);
+  argint(4, &maxlen);
+
+  // Find the socket for the destination port.
+  acquire(&sockets_lock);
+  for(sock_idx = 0; sock_idx < MAX_SOCKETS; sock_idx++){
+    sock = &sockets[sock_idx];
+    if(sock->type == IPPROTO_UDP && sock->local_port == dport){
+      break;
+    }
+  }
+
+  if(sock_idx == MAX_SOCKETS){
+    release(&sockets_lock);
+    return -1;
+  }
+  release(&sockets_lock);
+
+  // Sleep until a packet is available.
+  acquire(&sock->rx_queue->lock);
+  while(sock->rx_queue->count == 0){
+    sleep(sock->rx_queue, &sock->rx_queue->lock);
+  }
+
+  // Now we have a packet to receive.
+  packet = sock->rx_queue->queue[sock->rx_queue->head];
+  sock->rx_queue->head = (sock->rx_queue->head + 1) % RX_QUEUE_SIZE;
+  sock->rx_queue->count--;
+  release(&sock->rx_queue->lock);
+
+  // Parse the packet.
+  recv_eth = (struct eth *)packet;
+  recv_ip = (struct ip *)(recv_eth + 1);
+  recv_udp = (struct udp *)(recv_ip + 1);
+
+  // Copy the source IP and port to user space.
+  if(copyout(p->pagetable, src, (char *)&recv_ip->ip_src, sizeof(recv_ip->ip_src)) < 0){
+    kfree(packet);
+    printf("recv: copyout src failed\n");
+    return -1;
+  }
+  if(copyout(p->pagetable, sport, (char *)&recv_udp->sport, sizeof(recv_udp->sport)) < 0){
+    kfree(packet);
+    printf("recv: copyout sport failed\n");
+    return -1;
+  }
+
+  // Copy the UDP payload to the user buffer.
+  if(copyout(p->pagetable, (uint64)buf, (char *)(recv_udp + 1), maxlen) < 0){
+    kfree(packet);
+    printf("recv: copyout failed\n");
+    return -1;
+  }
+
+  // Calculate the number of bytes copied.
+  payload_len = ntohs(recv_udp->ulen) - sizeof(struct udp);
+  copied_bytes = payload_len > maxlen ? maxlen : payload_len;
+  kfree(packet); // Free the packet buffer after copying.
+
+  return copied_bytes;
 }
 
 // This code is lifted from FreeBSD's ping.c, and is copyright by the Regents
@@ -236,7 +308,8 @@ sys_send(void)
 }
 
 //
-// receive an IP packet.
+// Receive an IP packet.
+//
 void
 ip_rx(char *buf, int len)
 {
@@ -249,11 +322,6 @@ ip_rx(char *buf, int len)
   //
   // Your code here.
   //
-  uint16 dport;
-  uint8 protocol;
-  struct socket *sock;
-  int sock_idx;
-
   if(len < sizeof(struct eth) + sizeof(struct ip) || len > PGSIZE){
     printf("ip_rx: invalid packet length %d\n", len);
     kfree(buf);
@@ -263,35 +331,121 @@ ip_rx(char *buf, int len)
   struct eth *ineth = (struct eth *) buf;
   struct ip *inip = (struct ip *)(ineth + 1);
 
-  dport = ntohs(inip->ip_dst);
-  protocol = inip->ip_p;
-
-  if(protocol != IPPROTO_UDP){
-    printf("ip_rx: Only UDP packets are supported\n");
-    kfree(buf);
-    return;
+  switch(inip->ip_p){
+    case IPPROTO_UDP:
+      udp_rx(buf, len, inip);
+      break;
+    case IPPROTO_ICMP:
+      icmp_rx(buf, len, inip);
+      break;
+    default:
+      printf("ip_rx: unsupported protocol %d\n", inip->ip_p);
+      kfree(buf);
+      break;
   }
+}
+
+//
+// Receive a UDP packet, store it in the appropriate socket's receive queue,
+// and wake up any process waiting on that queue.
+// If no socket is bound to the destination port or the queue is full,
+// drop the packet and return without waking up any process.
+//
+void
+udp_rx(char *buf, int len, struct ip *inip)
+{
+  uint16 dport;
+  struct socket *sock;
+  int sock_idx;
+
+  dport = ntohs(inip->ip_dst);
 
   acquire(&bindmap_lock);
-  if(!(bindmap[dport / sizeof(uint64)] & (1U << (dport % sizeof(uint64))))){
+  if(!(bindmap[dport / sizeof(uint64)] & (1U << (dport % sizeof(uint64))))) {
     release(&bindmap_lock);
     printf("ip_rx: No socket bound to port %d\n", dport);
     kfree(buf);
     return;
   }
   release(&bindmap_lock);
-  
+
   // Find the socket for the destination port.
-  for(sock_idx = 0; sock_idx < MAX_SOCKETS; sock_idx++){
+  for(sock_idx = 0; sock_idx < MAX_SOCKETS; sock_idx++) {
     sock = &sockets[sock_idx];
-    if(sock->type == IPPROTO_UDP && sock->local_port == dport){
+    if(sock->type == IPPROTO_UDP && sock->local_port == dport) {
       break;
     }
   }
+
+  if(sock_idx == MAX_SOCKETS) {
+    printf("ip_rx: No socket found for port %d\n", dport);
+    kfree(buf);
+    return;
+  }
+
+  // Add the packet to the socket's receive queue.
+  acquire(&sock->rx_queue->lock);
+  if(sock->rx_queue->count >= RX_QUEUE_SIZE) {
+    printf("ip_rx: Receive queue is full for socket on port %d\n", dport);
+    release(&sock->rx_queue->lock);
+    kfree(buf);
+    return;
+  }
+  sock->rx_queue->queue[sock->rx_queue->tail] = buf;
+  sock->rx_queue->tail = (sock->rx_queue->tail + 1) % RX_QUEUE_SIZE;
+  sock->rx_queue->count++;
+  release(&sock->rx_queue->lock);
+
+  // Wake up any process waiting on this socket's receive queue.
+  wakeup(sock->rx_queue);
 }
 
 //
-// send an ARP reply packet to tell qemu to map
+// Receive an ICMP packet and construct an ICMP response if needed.
+// For simplicity we assume that the ICMP packet is an echo request,
+//
+void
+icmp_rx(char *buf, int len, struct ip *inip)
+{
+  printf("icmp_rx: received an ICMP packet\n");
+
+  struct eth *ineth = (struct eth *) buf;
+  char *inpayload = (char *)(ineth + 1);
+
+  char *response_buf = kalloc();
+  if(response_buf == 0)
+    panic("icmp_rx: kalloc failed");
+
+  struct eth *eth = (struct eth *) response_buf;
+  memmove(eth->dhost, ineth->shost, ETHADDR_LEN);
+  memmove(eth->shost, local_mac, ETHADDR_LEN);
+  eth->type = htons(ETHTYPE_IP);
+
+  struct ip *ip = (struct ip *)(eth + 1);
+  ip->ip_vhl = 0x45; // version 4, header length 4*5.
+  ip->ip_tos = 0;
+  ip->ip_len = htons(len);
+  ip->ip_id = 0;
+  ip->ip_off = 0;
+  ip->ip_ttl = 100;
+  ip->ip_p = IPPROTO_ICMP;
+  ip->ip_src = htonl(inip->ip_dst); // source IP is the destination IP of the received packet.
+  ip->ip_dst = htonl(inip->ip_src); // destination IP is the source IP of the received packet.
+  ip->ip_sum = in_cksum((unsigned char *)ip, sizeof(*ip));
+
+  // Copy the ICMP payload to the response.
+  char *payload = (char *)(ip + 1);
+  if(memmove(payload, inpayload, len - sizeof(struct eth) - sizeof(struct ip)) < 0)
+    panic("icmp_rx: memmove failed");
+  
+  // Transmit the response.
+  e1000_transmit(response_buf, len);
+
+  kfree(buf); // Free the original packet buffer.
+}
+
+//
+// Send an ARP reply packet to tell qemu to map
 // xv6's ip address to its ethernet address.
 // this is the bare minimum needed to persuade
 // qemu to send IP packets to xv6; the real ARP
@@ -368,9 +522,26 @@ allocsock(uint8 type, uint16 local_port, uint32 local_ip)
       sock->type = type;
       sock->local_port = local_port;
       sock->local_ip = local_ip;
-      sock->remote_port = 0;
-      sock->remote_ip = 0;
-      sock->rx_queue = 0;
+
+      // Allocate a receive queue for the socket.
+      sock->rx_queue = (struct rx_queue *)kalloc();
+      if(sock->rx_queue == 0){
+        printf("allocsock: kalloc failed for rx_queue\n");
+        release(&sockets_lock);
+        return 0;
+      }
+
+      // Initialize the allocated receive queue.
+      initlock(&sock->rx_queue->lock, "rx_queue_lock");
+      sock->rx_queue->head = 0;
+      sock->rx_queue->tail = 0;
+      sock->rx_queue->count = 0;
+
+      // Initialize queue pointers to 0 (NULL).
+      for(int i = 0; i < RX_QUEUE_SIZE; i++) {
+        sock->rx_queue->queue[i] = 0;
+      }
+
       release(&sockets_lock);
       return sock;
     }
@@ -394,8 +565,6 @@ freesock(uint16 local_port)
       sock->type = 0; // Mark the socket as free.
       sock->local_port = 0;
       sock->local_ip = 0;
-      sock->remote_port = 0;
-      sock->remote_ip = 0;
       if(sock->rx_queue) {
         // Free the receive queue if it exists.
         acquire(&sock->rx_queue->lock);
