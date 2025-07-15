@@ -458,6 +458,7 @@ ping3()
   //
   // send one packet on 2009.
   //
+  printf("ping3: sending one packet on 2009\n");
   {
     uint32 dst = 0x0A000202; // 10.0.2.2
     int dport = NET_TESTS_PORT;
@@ -478,6 +479,7 @@ ping3()
   // replies must be dropped due to the requirement
   // for finite maximum queueing.
   //
+  printf("ping3: sending burst of packets on 2008 and 2010\n");
   for(int ii = 0; ii < 257; ii++){
     uint32 dst = 0x0A000202; // 10.0.2.2
     int dport = NET_TESTS_PORT;
@@ -497,6 +499,7 @@ ping3()
   //
   // send another packet from 2009.
   //
+  printf("ping3: sending another packet on 2009\n");
   {
     uint32 dst = 0x0A000202; // 10.0.2.2
     int dport = NET_TESTS_PORT;

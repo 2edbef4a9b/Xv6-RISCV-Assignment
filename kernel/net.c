@@ -182,23 +182,17 @@ sys_recv(void)
   recv_udp = (struct udp *)(recv_ip + 1);
 
   // Copy the source IP and port to user space.
-  if(copyout(p->pagetable, src, (char *)&recv_ip->ip_src, sizeof(recv_ip->ip_src)) < 0){
-    kfree(packet);
-    printf("recv: copyout src failed\n");
-    return -1;
-  }
-  if(copyout(p->pagetable, sport, (char *)&recv_udp->sport, sizeof(recv_udp->sport)) < 0){
-    kfree(packet);
-    printf("recv: copyout sport failed\n");
-    return -1;
-  }
+  uint32 src_host = ntohl(recv_ip->ip_src);
+  uint16 sport_host = ntohs(recv_udp->sport);
+
+  if(copyout(p->pagetable, src, (char *)&src_host, sizeof(src_host)) < 0)
+    panic("recv: copyout src failed");
+  if(copyout(p->pagetable, sport, (char *)&sport_host, sizeof(sport_host)) < 0)
+    panic("recv: copyout sport failed");
 
   // Copy the UDP payload to the user buffer.
-  if(copyout(p->pagetable, (uint64)buf, (char *)(recv_udp + 1), maxlen) < 0){
-    kfree(packet);
-    printf("recv: copyout failed\n");
-    return -1;
-  }
+  if(copyout(p->pagetable, (uint64)buf, (char *)(recv_udp + 1), maxlen) < 0)
+    panic("recv: copyout buf failed");
 
   // Calculate the number of bytes copied.
   payload_len = ntohs(recv_udp->ulen) - sizeof(struct udp);
@@ -296,13 +290,14 @@ sys_send(void)
   udp->ulen = htons(len + sizeof(struct udp));
 
   char *payload = (char *)(udp + 1);
-  if(copyin(p->pagetable, payload, bufaddr, len) < 0){
+  if(copyin(p->pagetable, payload, bufaddr, len) < 0)
+    panic("sys_send: copyin buf failed");
+
+  if(e1000_transmit(buf, total) < 0){
     kfree(buf);
-    printf("send: copyin failed\n");
+    printf("sys_send: e1000_transmit failed\n");
     return -1;
   }
-
-  e1000_transmit(buf, total);
 
   return 0;
 }
@@ -322,11 +317,8 @@ ip_rx(char *buf, int len)
   //
   // Your code here.
   //
-  if(len < sizeof(struct eth) + sizeof(struct ip) || len > PGSIZE){
-    printf("ip_rx: invalid packet length %d\n", len);
-    kfree(buf);
-    return;
-  }
+  if(len < sizeof(struct eth) + sizeof(struct ip) || len > PGSIZE)
+    panic("ip_rx: invalid packet length");
 
   struct eth *ineth = (struct eth *) buf;
   struct ip *inip = (struct ip *)(ineth + 1);
@@ -356,14 +348,18 @@ udp_rx(char *buf, int len, struct ip *inip)
 {
   uint16 dport;
   struct socket *sock;
+  struct udp *inudp;
   int sock_idx;
+  char *inbuf;
 
-  dport = ntohs(inip->ip_dst);
+  inudp = (struct udp *)(inip + 1);
+  dport = ntohs(inudp->dport);
 
+  // Check if the destination port is bound.
   acquire(&bindmap_lock);
   if(!(bindmap[dport / sizeof(uint64)] & (1U << (dport % sizeof(uint64))))) {
     release(&bindmap_lock);
-    printf("ip_rx: No socket bound to port %d\n", dport);
+    printf("udp_rx: No socket bound to port %d\n", dport);
     kfree(buf);
     return;
   }
@@ -377,26 +373,39 @@ udp_rx(char *buf, int len, struct ip *inip)
     }
   }
 
+  // If no socket found for the port, drop the packet.
   if(sock_idx == MAX_SOCKETS) {
-    printf("ip_rx: No socket found for port %d\n", dport);
+    printf("udp_rx: No socket found for port %d\n", dport);
     kfree(buf);
     return;
   }
 
-  // Add the packet to the socket's receive queue.
+  // Check if the receive queue for the socket is full.
   acquire(&sock->rx_queue->lock);
   if(sock->rx_queue->count >= RX_QUEUE_SIZE) {
-    printf("ip_rx: Receive queue is full for socket on port %d\n", dport);
+    printf("udp_rx: Receive queue is full for socket on port %d\n", dport);
     release(&sock->rx_queue->lock);
     kfree(buf);
     return;
   }
-  sock->rx_queue->queue[sock->rx_queue->tail] = buf;
+
+  // Allocate a buffer for the received packet.
+  inbuf = kalloc();
+  if(inbuf == 0)
+    panic("udp_rx: kalloc failed");
+
+  // Copy the packet data into the buffer.
+  if(memmove(inbuf, buf, len) < 0)
+    panic("udp_rx: memmove failed");
+
+  // Add the packet to the socket's receive queue.
+  sock->rx_queue->queue[sock->rx_queue->tail] = inbuf;
   sock->rx_queue->tail = (sock->rx_queue->tail + 1) % RX_QUEUE_SIZE;
   sock->rx_queue->count++;
   release(&sock->rx_queue->lock);
 
   // Wake up any process waiting on this socket's receive queue.
+  kfree(buf); // Free the original packet buffer.
   wakeup(sock->rx_queue);
 }
 
@@ -460,7 +469,6 @@ arp_rx(char *inbuf)
     kfree(inbuf);
     return;
   }
-  printf("arp_rx: received an ARP packet\n");
   seen_arp = 1;
 
   struct eth *ineth = (struct eth *) inbuf;
@@ -525,11 +533,8 @@ allocsock(uint8 type, uint16 local_port, uint32 local_ip)
 
       // Allocate a receive queue for the socket.
       sock->rx_queue = (struct rx_queue *)kalloc();
-      if(sock->rx_queue == 0){
-        printf("allocsock: kalloc failed for rx_queue\n");
-        release(&sockets_lock);
-        return 0;
-      }
+      if(sock->rx_queue == 0)
+        panic("allocsock: kalloc failed for rx_queue");
 
       // Initialize the allocated receive queue.
       initlock(&sock->rx_queue->lock, "rx_queue_lock");

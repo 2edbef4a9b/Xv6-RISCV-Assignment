@@ -101,7 +101,6 @@ e1000_transmit(char *buf, int len)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after send completes.
   //
-  printf("transmit: transmitting %d bytes at %p\n", len, buf);
   uint64 tx_idx;
 
   acquire(&e1000_lock);
@@ -144,7 +143,6 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver a buf for each packet (using net_rx()).
   //
-  printf("recv: checking for received packets\n");
   uint64 rx_idx;
   char *buf;
 
