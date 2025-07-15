@@ -197,6 +197,7 @@ sys_recv(void)
   // Calculate the number of bytes copied.
   payload_len = ntohs(recv_udp->ulen) - sizeof(struct udp);
   copied_bytes = payload_len > maxlen ? maxlen : payload_len;
+  printf("sys_recv: freeing packet %p\n", packet);
   kfree(packet); // Free the packet buffer after copying.
 
   return copied_bytes;
@@ -332,6 +333,7 @@ ip_rx(char *buf, int len)
       break;
     default:
       printf("ip_rx: unsupported protocol %d\n", inip->ip_p);
+      printf("ip_rx: freeing buffer %p\n", buf);
       kfree(buf);
       break;
   }
@@ -350,7 +352,6 @@ udp_rx(char *buf, int len, struct ip *inip)
   struct socket *sock;
   struct udp *inudp;
   int sock_idx;
-  char *inbuf;
 
   inudp = (struct udp *)(inip + 1);
   dport = ntohs(inudp->dport);
@@ -389,23 +390,13 @@ udp_rx(char *buf, int len, struct ip *inip)
     return;
   }
 
-  // Allocate a buffer for the received packet.
-  inbuf = kalloc();
-  if(inbuf == 0)
-    panic("udp_rx: kalloc failed");
-
-  // Copy the packet data into the buffer.
-  if(memmove(inbuf, buf, len) < 0)
-    panic("udp_rx: memmove failed");
-
   // Add the packet to the socket's receive queue.
-  sock->rx_queue->queue[sock->rx_queue->tail] = inbuf;
+  sock->rx_queue->queue[sock->rx_queue->tail] = buf;
   sock->rx_queue->tail = (sock->rx_queue->tail + 1) % RX_QUEUE_SIZE;
   sock->rx_queue->count++;
-  release(&sock->rx_queue->lock);
 
-  // Wake up any process waiting on this socket's receive queue.
-  kfree(buf); // Free the original packet buffer.
+  // Wake up any process waiting on the receive queue.
+  release(&sock->rx_queue->lock);
   wakeup(sock->rx_queue);
 }
 
@@ -450,6 +441,7 @@ icmp_rx(char *buf, int len, struct ip *inip)
   // Transmit the response.
   e1000_transmit(response_buf, len);
 
+  printf("icmp_rx: freeing buffer %p\n", buf);
   kfree(buf); // Free the original packet buffer.
 }
 
@@ -469,6 +461,7 @@ arp_rx(char *inbuf)
     kfree(inbuf);
     return;
   }
+  printf("arp_rx: received an ARP packet\n");
   seen_arp = 1;
 
   struct eth *ineth = (struct eth *) inbuf;
@@ -497,6 +490,7 @@ arp_rx(char *inbuf)
 
   e1000_transmit(buf, sizeof(*eth) + sizeof(*arp));
 
+  printf("arp_rx: freeing buffer %p\n", inbuf);
   kfree(inbuf);
 }
 
@@ -512,6 +506,8 @@ net_rx(char *buf, int len)
      ntohs(eth->type) == ETHTYPE_IP){
     ip_rx(buf, len);
   } else {
+    printf("net_rx: unknown packet type %x, length %d\n", ntohs(eth->type), len);
+    printf("net_rx: freeing buffer %p\n", buf);
     kfree(buf);
   }
 }

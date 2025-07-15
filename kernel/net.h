@@ -134,7 +134,7 @@ struct dns_data {
 //
 
 #define MAX_PORTS 65536  // Maximum number of ports.
-#define MAX_SOCKETS 32 // Maximum number of sockets.
+#define MAX_SOCKETS 32   // Maximum number of sockets.
 #define RX_QUEUE_SIZE 16 // Maximum number of packets in the receive queue.
 
 struct rx_queue {

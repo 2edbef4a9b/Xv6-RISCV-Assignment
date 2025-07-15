@@ -158,6 +158,7 @@ e1000_recv(void)
       break;
     }
     rx_bufs[rx_idx] = buf;
+    rx_ring[rx_idx].addr = (uint64)buf;
 
     // Clear the status of the RX descriptor.
     rx_ring[rx_idx].status = 0;
