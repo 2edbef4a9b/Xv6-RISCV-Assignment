@@ -106,17 +106,17 @@ e1000_transmit(char *buf, int len)
   acquire(&e1000_lock);
   tx_idx = regs[E1000_TDT];
   // Check if the TX ring is overflowing.
-  if ((tx_ring[tx_idx].status & E1000_TXD_STAT_DD) == 0) {
+  if ((tx_ring[tx_idx].status & E1000_TXD_STAT_DD) == 0){
     printf("transmit: TX ring is overflowing\n");
     release(&e1000_lock);
     return -1;
   }
 
   // Free the previous buffer if it exists.
-  if (tx_bufs[tx_idx]) {
+  if (tx_bufs[tx_idx]){
     kfree(tx_bufs[tx_idx]);
-    tx_bufs[tx_idx] = buf;
   }
+  tx_bufs[tx_idx] = buf;
 
   // [E1000 3.3] Set up the TX descriptor.
   tx_ring[tx_idx].addr = (uint64)buf;

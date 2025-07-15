@@ -357,6 +357,7 @@ ping1()
     }
   }
 
+  unbind(2005); // Unbind the port after use.
   printf("ping1: OK\n");
 
   return 1;
@@ -434,6 +435,8 @@ ping2()
     }
   }
 
+  unbind(2006); // Unbind the ports after use.
+  unbind(2007); // Unbind the ports after use.
   printf("ping2: OK\n");
 
   return 1;
@@ -458,7 +461,6 @@ ping3()
   //
   // send one packet on 2009.
   //
-  printf("ping3: sending one packet on 2009\n");
   {
     uint32 dst = 0x0A000202; // 10.0.2.2
     int dport = NET_TESTS_PORT;
@@ -479,7 +481,6 @@ ping3()
   // replies must be dropped due to the requirement
   // for finite maximum queueing.
   //
-  printf("ping3: sending burst of packets on 2008 and 2010\n");
   for(int ii = 0; ii < 257; ii++){
     uint32 dst = 0x0A000202; // 10.0.2.2
     int dport = NET_TESTS_PORT;
@@ -499,7 +500,6 @@ ping3()
   //
   // send another packet from 2009.
   //
-  printf("ping3: sending another packet on 2009\n");
   {
     uint32 dst = 0x0A000202; // 10.0.2.2
     int dport = NET_TESTS_PORT;
@@ -599,6 +599,8 @@ ping3()
 
   printf("ping3: OK\n");
 
+  unbind(2008); // Unbind the ports after use.
+  unbind(2009); // Unbind the ports after use.
   return 1;
 }
 

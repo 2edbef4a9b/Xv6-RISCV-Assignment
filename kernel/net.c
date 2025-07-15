@@ -52,8 +52,6 @@ sys_bind(void)
   int port;
   argint(0, &port);
 
-  printf("bind: binding port %d\n", port);
-
   if (port < 0 || port >= MAX_PORTS) {
     printf("bind: invalid port %d\n", port);
     return -1;
@@ -89,8 +87,6 @@ sys_unbind(void)
   //
   int port;
   argint(0, &port);
-
-  printf("unbind: unbinding port %d\n", port);
 
   if (port < 0 || port >= MAX_PORTS) {
     printf("unbind: invalid port %d\n", port);
@@ -197,7 +193,6 @@ sys_recv(void)
   // Calculate the number of bytes copied.
   payload_len = ntohs(recv_udp->ulen) - sizeof(struct udp);
   copied_bytes = payload_len > maxlen ? maxlen : payload_len;
-  printf("sys_recv: freeing packet %p\n", packet);
   kfree(packet); // Free the packet buffer after copying.
 
   return copied_bytes;
@@ -360,7 +355,6 @@ udp_rx(char *buf, int len, struct ip *inip)
   acquire(&bindmap_lock);
   if(!(bindmap[dport / sizeof(uint64)] & (1U << (dport % sizeof(uint64))))) {
     release(&bindmap_lock);
-    printf("udp_rx: No socket bound to port %d\n", dport);
     kfree(buf);
     return;
   }
@@ -384,7 +378,6 @@ udp_rx(char *buf, int len, struct ip *inip)
   // Check if the receive queue for the socket is full.
   acquire(&sock->rx_queue->lock);
   if(sock->rx_queue->count >= RX_QUEUE_SIZE) {
-    printf("udp_rx: Receive queue is full for socket on port %d\n", dport);
     release(&sock->rx_queue->lock);
     kfree(buf);
     return;
@@ -441,7 +434,6 @@ icmp_rx(char *buf, int len, struct ip *inip)
   // Transmit the response.
   e1000_transmit(response_buf, len);
 
-  printf("icmp_rx: freeing buffer %p\n", buf);
   kfree(buf); // Free the original packet buffer.
 }
 
@@ -490,7 +482,6 @@ arp_rx(char *inbuf)
 
   e1000_transmit(buf, sizeof(*eth) + sizeof(*arp));
 
-  printf("arp_rx: freeing buffer %p\n", inbuf);
   kfree(inbuf);
 }
 
@@ -506,8 +497,6 @@ net_rx(char *buf, int len)
      ntohs(eth->type) == ETHTYPE_IP){
     ip_rx(buf, len);
   } else {
-    printf("net_rx: unknown packet type %x, length %d\n", ntohs(eth->type), len);
-    printf("net_rx: freeing buffer %p\n", buf);
     kfree(buf);
   }
 }
@@ -584,9 +573,10 @@ freesock(uint16 local_port)
         sock->rx_queue->count = 0;
         sock->rx_queue->head = 0;
         sock->rx_queue->tail = 0;
-        sock->rx_queue = 0;
 
         release(&sock->rx_queue->lock);
+        kfree(sock->rx_queue); // Free the receive queue structure.
+        sock->rx_queue = 0;    // Clear the pointer to the receive queue.
       }
       release(&sockets_lock);
       return;
