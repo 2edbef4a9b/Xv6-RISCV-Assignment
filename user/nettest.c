@@ -357,7 +357,6 @@ ping1()
     }
   }
 
-  unbind(2005); // Unbind the port after use.
   printf("ping1: OK\n");
 
   return 1;
@@ -435,8 +434,6 @@ ping2()
     }
   }
 
-  unbind(2006); // Unbind the ports after use.
-  unbind(2007); // Unbind the ports after use.
   printf("ping2: OK\n");
 
   return 1;
@@ -599,8 +596,6 @@ ping3()
 
   printf("ping3: OK\n");
 
-  unbind(2008); // Unbind the ports after use.
-  unbind(2009); // Unbind the ports after use.
   return 1;
 }
 

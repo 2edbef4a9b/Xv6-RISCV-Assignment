@@ -137,21 +137,18 @@ struct dns_data {
 #define MAX_SOCKETS 32   // Maximum number of sockets.
 #define RX_QUEUE_SIZE 16 // Maximum number of packets in the receive queue.
 
-struct rx_queue {
+// For simplicity, remote IP addresses, remote ports, and other fields
+// are not used in this implementation, but they can be added later if needed.
+// rx_queue is embedded in the socket structure to avoid dynamic memory allocation.
+struct socket {
+  uint8 type;                 // Socket protocol type (e.g., UDP).
+  uint16 local_port;          // Local port number.
+  uint32 local_ip;            // Local IP address.
   int head;                   // Head index for the receive queue.
   int tail;                   // Tail index for the receive queue.
   int count;                  // Number of packets in the queue.
   char *queue[RX_QUEUE_SIZE]; // Receive queue for incoming packets.
   struct spinlock lock;       // Spinlock for synchronizing access to the queue.
-};
-
-// For simplicity, remote IP addresses, remote ports, and other fields
-// are not used in this implementation, but they can be added later if needed.
-struct socket {
-  uint8 type;                // Socket protocol type (e.g., UDP).
-  uint16 local_port;         // Local port number.
-  uint32 local_ip;           // Local IP address.
-  struct rx_queue *rx_queue; // Pointer to the receive queue.
 };
 
 void

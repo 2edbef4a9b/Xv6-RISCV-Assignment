@@ -161,16 +161,16 @@ sys_recv(void)
   release(&sockets_lock);
 
   // Sleep until a packet is available.
-  acquire(&sock->rx_queue->lock);
-  while(sock->rx_queue->count == 0){
-    sleep(sock->rx_queue, &sock->rx_queue->lock);
+  acquire(&sock->lock);
+  while(sock->count == 0){
+    sleep(sock, &sock->lock);
   }
 
   // Now we have a packet to receive.
-  packet = sock->rx_queue->queue[sock->rx_queue->head];
-  sock->rx_queue->head = (sock->rx_queue->head + 1) % RX_QUEUE_SIZE;
-  sock->rx_queue->count--;
-  release(&sock->rx_queue->lock);
+  packet = sock->queue[sock->head];
+  sock->head = (sock->head + 1) % RX_QUEUE_SIZE;
+  sock->count--;
+  release(&sock->lock);
 
   // Parse the packet.
   recv_eth = (struct eth *)packet;
@@ -376,21 +376,21 @@ udp_rx(char *buf, int len, struct ip *inip)
   }
 
   // Check if the receive queue for the socket is full.
-  acquire(&sock->rx_queue->lock);
-  if(sock->rx_queue->count >= RX_QUEUE_SIZE) {
-    release(&sock->rx_queue->lock);
+  acquire(&sock->lock);
+  if(sock->count >= RX_QUEUE_SIZE) {
+    release(&sock->lock);
     kfree(buf);
     return;
   }
 
   // Add the packet to the socket's receive queue.
-  sock->rx_queue->queue[sock->rx_queue->tail] = buf;
-  sock->rx_queue->tail = (sock->rx_queue->tail + 1) % RX_QUEUE_SIZE;
-  sock->rx_queue->count++;
+  sock->queue[sock->tail] = buf;
+  sock->tail = (sock->tail + 1) % RX_QUEUE_SIZE;
+  sock->count++;
 
   // Wake up any process waiting on the receive queue.
-  release(&sock->rx_queue->lock);
-  wakeup(sock->rx_queue);
+  release(&sock->lock);
+  wakeup(sock);
 }
 
 //
@@ -516,20 +516,15 @@ allocsock(uint8 type, uint16 local_port, uint32 local_ip)
       sock->local_port = local_port;
       sock->local_ip = local_ip;
 
-      // Allocate a receive queue for the socket.
-      sock->rx_queue = (struct rx_queue *)kalloc();
-      if(sock->rx_queue == 0)
-        panic("allocsock: kalloc failed for rx_queue");
-
       // Initialize the allocated receive queue.
-      initlock(&sock->rx_queue->lock, "rx_queue_lock");
-      sock->rx_queue->head = 0;
-      sock->rx_queue->tail = 0;
-      sock->rx_queue->count = 0;
+      initlock(&sock->lock, "rx_queue_lock");
+      sock->head = 0;
+      sock->tail = 0;
+      sock->count = 0;
 
       // Initialize queue pointers to 0 (NULL).
       for(int i = 0; i < RX_QUEUE_SIZE; i++) {
-        sock->rx_queue->queue[i] = 0;
+        sock->queue[i] = 0;
       }
 
       release(&sockets_lock);
@@ -555,28 +550,26 @@ freesock(uint16 local_port)
       sock->type = 0; // Mark the socket as free.
       sock->local_port = 0;
       sock->local_ip = 0;
-      if(sock->rx_queue) {
+      if(sock) {
         // Free the receive queue if it exists.
-        acquire(&sock->rx_queue->lock);
+        acquire(&sock->lock);
 
         // Free all packets in the receive queue.
-        while(sock->rx_queue->count > 0){
-          queue_idx = sock->rx_queue->head;
-          buf = sock->rx_queue->queue[queue_idx];
+        while(sock->count > 0){
+          queue_idx = sock->head;
+          buf = sock->queue[queue_idx];
           kfree(buf);
-          sock->rx_queue->queue[queue_idx] = 0;
-          sock->rx_queue->count--;
+          sock->queue[queue_idx] = 0;
+          sock->count--;
           queue_idx = (queue_idx + 1) % RX_QUEUE_SIZE;
         }
 
         // Reset the receive queue.
-        sock->rx_queue->count = 0;
-        sock->rx_queue->head = 0;
-        sock->rx_queue->tail = 0;
+        sock->count = 0;
+        sock->head = 0;
+        sock->tail = 0;
 
-        release(&sock->rx_queue->lock);
-        kfree(sock->rx_queue); // Free the receive queue structure.
-        sock->rx_queue = 0;    // Clear the pointer to the receive queue.
+        release(&sock->lock);
       }
       release(&sockets_lock);
       return;
