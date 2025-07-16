@@ -31,7 +31,7 @@ kinit()
 {
   char name[16];
   for(int i = 0; i < NCPU; i++){
-    snprintf(name, sizeof(name), "kmem_%d", i);
+    snprintf(name, sizeof(name), "kmem%d", i);
     initlock(&kmem[i].lock, name);
     kmem[i].freelist = 0;
     kmem[i].count = 0;
@@ -54,7 +54,7 @@ freerange(void *pa_start, void *pa_end)
     panic("freerange: invalid cpu id");
 
   acquire(&kmem[cpu].lock);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE) {
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
     struct run *r = (struct run*)p;
     if(((uint64)r % PGSIZE) != 0 || (char*)r < end || (uint64)r >= PHYSTOP)
       panic("freerange");
@@ -76,14 +76,15 @@ kfree(void *pa)
   struct run *r;
   int cpu;
 
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("kfree");
+
   push_off();
   cpu = cpuid();
   pop_off();
+
   if(cpu < 0 || cpu >= NCPU)
     panic("kfree: invalid cpu id");
-
-  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
-    panic("kfree");
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
@@ -108,10 +109,7 @@ ksteal(int stealer)
 
   total_stolen = 0;
 
-  for(cpu = 0; cpu < NCPU; cpu++){
-    if(cpu == stealer)
-      continue;
-
+  for(cpu = (stealer + 1) % NCPU; cpu != stealer; cpu = (cpu + 1) % NCPU){
     stolen = 0;
     acquire(&kmem[cpu].lock);
     start = kmem[cpu].freelist;
@@ -169,22 +167,23 @@ kalloc(void)
 
   acquire(&kmem[cpu].lock);
   r = kmem[cpu].freelist;
-  release(&kmem[cpu].lock);
 
   if(!r){
     // No free pages available, try to steal from another CPU.
-    int stolen = ksteal(cpu);
-    if(stolen == 0){
-      return 0; // No memory available.
-    }
+    release(&kmem[cpu].lock);
+    ksteal(cpu);
+    acquire(&kmem[cpu].lock);
   }
 
-  acquire(&kmem[cpu].lock);
   r = kmem[cpu].freelist;
-  kmem[cpu].freelist = r->next;
-  kmem[cpu].count--;
+  if(r){
+    kmem[cpu].freelist = r->next;
+    kmem[cpu].count--;
+  }
+
   release(&kmem[cpu].lock);
 
-  memset((char*)r, 5, PGSIZE); // fill with junk
+  if(r)
+    memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
