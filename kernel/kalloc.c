@@ -9,7 +9,6 @@
 #include "riscv.h"
 #include "defs.h"
 
-#define STEAL_THRESHOLD 16
 #define STEAL_AMOUNT 4
 
 void freerange(void *pa_start, void *pa_end);
@@ -98,6 +97,63 @@ kfree(void *pa)
   release(&kmem[cpu].lock);
 }
 
+// Steal memory from another CPU's freelist.
+// Returns the number of pages stolen.
+// Returns 0 if no pages were stolen.
+int
+ksteal(int stealer)
+{
+  struct run *start, *end;
+  int cpu, total_stolen, stolen;
+
+  total_stolen = 0;
+
+  for(cpu = 0; cpu < NCPU; cpu++){
+    if(cpu == stealer)
+      continue;
+
+    stolen = 0;
+    acquire(&kmem[cpu].lock);
+    start = kmem[cpu].freelist;
+    end = start;
+    if(!start){
+      release(&kmem[cpu].lock);
+      continue; // No pages to steal from this CPU.
+    }
+
+    while(end->next && stolen + total_stolen < STEAL_AMOUNT){
+      stolen++;
+      end = end->next;
+    }
+
+    kmem[cpu].freelist = end->next;
+    kmem[cpu].count -= stolen;
+    release(&kmem[cpu].lock);
+
+    total_stolen += stolen;
+
+    // Add the stolen pages to the stealer's freelist.
+    acquire(&kmem[stealer].lock);
+    if(!kmem[stealer].freelist){
+      // Set the stealer's freelist to the stolen freelist.
+      kmem[stealer].freelist = start;
+      end->next = 0;
+    } else {
+      // Link the stolen pages to the end of the stealer's freelist.
+      end->next = kmem[stealer].freelist;
+      kmem[stealer].freelist = start;
+    }
+    kmem[stealer].count += stolen;
+    release(&kmem[stealer].lock);
+
+    if(total_stolen >= STEAL_AMOUNT)
+      break; // Enough pages stolen.
+  }
+
+  return total_stolen;
+}
+
+
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.
 // Returns 0 if the memory cannot be allocated.
@@ -112,68 +168,23 @@ kalloc(void)
   pop_off();
 
   acquire(&kmem[cpu].lock);
-
-  // Check if we need to steal memory from another CPU.
-  if(kmem[cpu].count < STEAL_THRESHOLD){
-    int stolen = ksteal(cpu);
-    if(stolen == 0 && kmem[cpu].count == 0){
-      // If no memory was stolen and current CPU has no pages,
-      // we cannot allocate any more pages.
-      printf("kalloc: CPU %d has no free pages\n", cpu);
-      release(&kmem[cpu].lock);
-      return 0;
-    }
-  }
-
   r = kmem[cpu].freelist;
-  if(r){
-    kmem[cpu].freelist = r->next;
-    kmem[cpu].count--;
-  }
   release(&kmem[cpu].lock);
 
-  if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
-  return (void*)r;
-}
-
-// Steal memory from another CPU's freelist.
-// Returns the number of pages stolen.
-// Returns 0 if no pages were stolen.
-int
-ksteal(int stealer)
-{
-  struct run *curr, *next;
-  int cpu, count;
-
-  count = 0;
-
-  for(cpu = 0; cpu < NCPU; cpu++) {
-    if(cpu == stealer)
-      continue;
-
-    acquire(&kmem[cpu].lock);
-
-    curr = kmem[cpu].freelist;
-    while(curr && count < STEAL_AMOUNT){
-      next = curr->next;
-      // Remove the page from the freelist.
-      kmem[cpu].freelist = next;
-      kmem[cpu].count--;
-      
-      // Add the page to the current CPU's freelist.
-      curr->next = kmem[stealer].freelist;
-      kmem[stealer].freelist = curr;
-      kmem[stealer].count++;
-      count++;
-      curr = next;
+  if(!r){
+    // No free pages available, try to steal from another CPU.
+    int stolen = ksteal(cpu);
+    if(stolen == 0){
+      return 0; // No memory available.
     }
-    release(&kmem[cpu].lock);
-
-    if(count >= STEAL_AMOUNT)
-      break; // Stop stealing if we reached the desired amount.
   }
 
-  // printf("ksteal: CPU %d stole %d pages from Other CPUs\n", stealer, count);
-  return count;
+  acquire(&kmem[cpu].lock);
+  r = kmem[cpu].freelist;
+  kmem[cpu].freelist = r->next;
+  kmem[cpu].count--;
+  release(&kmem[cpu].lock);
+
+  memset((char*)r, 5, PGSIZE); // fill with junk
+  return (void*)r;
 }
