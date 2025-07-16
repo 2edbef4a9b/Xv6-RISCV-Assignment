@@ -113,7 +113,6 @@ ksteal(int stealer)
   for(cpu = 0; cpu < NCPU; cpu++){
     if(cpu == stealer)
       continue; // Skip self.
-    stolen = 0;
     acquire(&kmem[cpu].lock);
     start = kmem[cpu].freelist;
     end = start;
@@ -123,6 +122,7 @@ ksteal(int stealer)
     }
 
     // Find the end of the freelist to steal.
+    stolen = 1;
     while(end->next && stolen + total_stolen < STEAL_AMOUNT){
       stolen++;
       end = end->next;
@@ -178,20 +178,17 @@ kalloc(void)
     release(&kmem[cpu].lock);
 
     // Note: If we return directly when ksteal() returns 0, we will fail test2.
-    ksteal(cpu);
+    if(!ksteal(cpu))
+      return 0; // No pages available after stealing.
     acquire(&kmem[cpu].lock);
   }
 
   // Remove the page from the freelist.
   r = kmem[cpu].freelist;
-  if(r){
-    kmem[cpu].freelist = r->next;
-    kmem[cpu].count--;
-  }
+  kmem[cpu].freelist = r->next;
+  kmem[cpu].count--;
 
-  release(&kmem[cpu].lock);
-
-  if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
+  release(&kmem[cpu].lock); 
+  memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
