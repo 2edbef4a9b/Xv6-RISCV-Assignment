@@ -91,6 +91,7 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
+  // Add the page to the end of the freelist for this CPU.
   acquire(&kmem[cpu].lock);
   r->next = kmem[cpu].freelist;
   kmem[cpu].freelist = r;
@@ -104,12 +105,14 @@ kfree(void *pa)
 int
 ksteal(int stealer)
 {
-  struct run *start, *end;
+  struct run *start, *end;  // Start and end of stolen freelist.
   int cpu, total_stolen, stolen;
 
   total_stolen = 0;
 
-  for(cpu = (stealer + 1) % NCPU; cpu != stealer; cpu = (cpu + 1) % NCPU){
+  for(cpu = 0; cpu < NCPU; cpu++){
+    if(cpu == stealer)
+      continue; // Skip self.
     stolen = 0;
     acquire(&kmem[cpu].lock);
     start = kmem[cpu].freelist;
@@ -119,11 +122,13 @@ ksteal(int stealer)
       continue; // No pages to steal from this CPU.
     }
 
+    // Find the end of the freelist to steal.
     while(end->next && stolen + total_stolen < STEAL_AMOUNT){
       stolen++;
       end = end->next;
     }
 
+    // Remove the stolen pages from the original CPU's freelist.
     kmem[cpu].freelist = end->next;
     kmem[cpu].count -= stolen;
     release(&kmem[cpu].lock);
@@ -171,10 +176,13 @@ kalloc(void)
   if(!r){
     // No free pages available, try to steal from another CPU.
     release(&kmem[cpu].lock);
+
+    // Note: If we return directly when ksteal() returns 0, we will fail test2.
     ksteal(cpu);
     acquire(&kmem[cpu].lock);
   }
 
+  // Remove the page from the freelist.
   r = kmem[cpu].freelist;
   if(r){
     kmem[cpu].freelist = r->next;
