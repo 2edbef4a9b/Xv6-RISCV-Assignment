@@ -36,6 +36,7 @@ struct {
   struct spinlock lock;
   struct buf buf[NBUF];
   struct bucket buckets[NBUCKETS];
+  struct spinlock bucket_locks[NBUCKETS];
   uint32 freelist; // Bitmask for free buffers.
 } bcache;
 
@@ -56,8 +57,9 @@ find(uint dev, uint blockno)
   bucket = &bcache.buckets[hashval];
 
   while(bucket->next){
-    if(bucket->next->dev == dev && bucket->next->blockno == blockno)
+    if(bucket->next->dev == dev && bucket->next->blockno == blockno){
       return bucket->next->bufidx;
+    }
     bucket = bucket->next;
   }
   return -1; // Not found.
@@ -74,8 +76,10 @@ insert(uint dev, uint blockno, int bufidx)
 
   // Check if the bucket already exists.
   while(bucket->next){
-    if(bucket->dev == dev && bucket->blockno == blockno)
+    if(bucket->dev == dev && bucket->blockno == blockno) {
+      printf("insert: bucket already exists for dev %d blockno %d\n", dev, blockno);
       return -1; // Already exists.
+    }
     bucket = bucket->next;
   }
 
@@ -161,7 +165,7 @@ binit(void)
   initlock(&bcache.lock, "bcache");
 
   // Initialize all buffers.
-  char name[16];
+  char name[20];
   for(int i = 0; i < NBUF; i++){
     snprintf(name, sizeof(name), "bcache%d", i);
     initsleeplock(&bcache.buf[i].lock, name);
@@ -172,6 +176,8 @@ binit(void)
     bcache.buckets[i].dev = 0;
     bcache.buckets[i].blockno = 0;
     bcache.buckets[i].bufidx = -1;
+    snprintf(name, sizeof(name), "bcache_bucket%d", i);
+    initlock(&bcache.bucket_locks[i], name);
   }
 }
 
@@ -182,16 +188,18 @@ static struct buf*
 bget(uint dev, uint blockno)
 {
   int bufidx;
+  uint hashval;
   struct buf *buf;
-
-  acquire(&bcache.lock);
+  static int idx;
 
   // Is the block already cached?
+  hashval = hash(dev, blockno);
+  acquire(&bcache.bucket_locks[hashval]);
   bufidx = find(dev, blockno);
   if(bufidx >= 0) {
     buf = &bcache.buf[bufidx];
     buf->refcnt++;
-    release(&bcache.lock);
+    release(&bcache.bucket_locks[hashval]);
     acquiresleep(&buf->lock);
     return buf;
   }
@@ -205,14 +213,17 @@ bget(uint dev, uint blockno)
     buf->valid = 0;
     buf->refcnt = 1;
     insert(dev, blockno, bufidx);
-    release(&bcache.lock);
+    release(&bcache.bucket_locks[hashval]);
     acquiresleep(&buf->lock);
     return buf;
   }
 
   // Not free buffer, find one to evict.
   for(bufidx = 0; bufidx < NBUF; bufidx++){
-    buf = &bcache.buf[bufidx];
+    idx++;
+    if(idx >= NBUF)
+      idx = 0; // Wrap around.
+    buf = &bcache.buf[idx];
     if(buf->refcnt == 0){ 
       // Found a free buffer.
       erase(buf->dev, buf->blockno);
@@ -220,8 +231,8 @@ bget(uint dev, uint blockno)
       buf->blockno = blockno;
       buf->valid = 0;
       buf->refcnt = 1;
-      insert(dev, blockno, bufidx);
-      release(&bcache.lock);
+      insert(dev, blockno, idx);
+      release(&bcache.bucket_locks[hashval]);
       acquiresleep(&buf->lock);
       return buf;
     } 
@@ -261,23 +272,17 @@ brelse(struct buf *b)
 
   releasesleep(&b->lock);
 
-  acquire(&bcache.lock);
   b->refcnt--;
-  release(&bcache.lock);
 }
 
 void
 bpin(struct buf *b) {
-  acquire(&bcache.lock);
   b->refcnt++;
-  release(&bcache.lock);
 }
 
 void
 bunpin(struct buf *b) {
-  acquire(&bcache.lock);
   b->refcnt--;
-  release(&bcache.lock);
 }
 
 
