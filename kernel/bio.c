@@ -23,7 +23,7 @@
 #include "fs.h"
 #include "buf.h"
 
-#define NBUCKETS 37 
+#define NBUCKETS 13
 
 struct bucket {
   uint dev;
@@ -33,12 +33,16 @@ struct bucket {
 };
 
 struct {
-  struct spinlock lock;
   struct buf buf[NBUF];
   struct bucket buckets[NBUCKETS];
   struct spinlock bucket_locks[NBUCKETS];
   uint32 freelist; // Bitmask for free buffers.
 } bcache;
+
+struct {
+  int clock;            // Current clock index for buffer replacement.
+  struct spinlock lock; // Spinlock for buffer cache clock.
+} bcache_clock;
 
 static uint
 hash(uint dev, uint blockno)
@@ -142,7 +146,6 @@ allocbuf(void)
   if(isfull())
     return -1; // No free buffers.
 
-
   // Find the first free buffer.
   // uint32 inverted = ~(bcache.freelist);
   // bufidx = __builtin_ctz(inverted);
@@ -162,8 +165,6 @@ allocbuf(void)
 void
 binit(void)
 {
-  initlock(&bcache.lock, "bcache");
-
   // Initialize all buffers.
   char name[20];
   for(int i = 0; i < NBUF; i++){
@@ -179,18 +180,20 @@ binit(void)
     snprintf(name, sizeof(name), "bcache_bucket%d", i);
     initlock(&bcache.bucket_locks[i], name);
   }
+
+  bcache_clock.clock = 0;
+  initlock(&bcache_clock.lock, "bcache_clock");
 }
 
 // Look through buffer cache for block on device dev.
-// If not found, allocate a buffer.
-// In either case, return locked buffer.
+// If not found, allocate a free buffer,
+// If there is no free buffer, evict one using the clock algorithm.
 static struct buf*
 bget(uint dev, uint blockno)
 {
-  int bufidx;
+  int bufidx, n;
   uint hashval;
   struct buf *buf;
-  static int idx;
 
   // Is the block already cached?
   hashval = hash(dev, blockno);
@@ -199,6 +202,7 @@ bget(uint dev, uint blockno)
   if(bufidx >= 0) {
     buf = &bcache.buf[bufidx];
     buf->refcnt++;
+    buf->referenced = 1;
     release(&bcache.bucket_locks[hashval]);
     acquiresleep(&buf->lock);
     return buf;
@@ -212,30 +216,39 @@ bget(uint dev, uint blockno)
     buf->blockno = blockno;
     buf->valid = 0;
     buf->refcnt = 1;
+    buf->referenced = 1;
     insert(dev, blockno, bufidx);
     release(&bcache.bucket_locks[hashval]);
     acquiresleep(&buf->lock);
     return buf;
   }
 
-  // Not free buffer, find one to evict.
-  for(bufidx = 0; bufidx < NBUF; bufidx++){
-    idx++;
-    if(idx >= NBUF)
-      idx = 0; // Wrap around.
-    buf = &bcache.buf[idx];
-    if(buf->refcnt == 0){ 
-      // Found a free buffer.
+ // Not free buffer, find one to evict using clock algorithm.
+  acquire(&bcache_clock.lock);
+  for(n = 0; n < 2 * NBUF; n++){
+    bcache_clock.clock++;
+    if(bcache_clock.clock >= NBUF)
+      bcache_clock.clock = 0;
+    buf = &bcache.buf[bcache_clock.clock];
+    if(buf->refcnt == 0 && !buf->referenced){
+      // Found a buffer to evict.
+      bufidx = bcache_clock.clock;
+      release(&bcache_clock.lock);
       erase(buf->dev, buf->blockno);
       buf->dev = dev;
       buf->blockno = blockno;
       buf->valid = 0;
       buf->refcnt = 1;
-      insert(dev, blockno, idx);
+      buf->referenced = 1;
+      insert(dev, blockno, bufidx);
       release(&bcache.bucket_locks[hashval]);
       acquiresleep(&buf->lock);
-      return buf;
-    } 
+      return buf; 
+    }
+    if(buf->refcnt == 0){
+      // Found a recently referenced buffer, reset its referenced flag.
+      buf->referenced = 0;
+    }
   }
   panic("bget: no buffers");
 }

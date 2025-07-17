@@ -5,6 +5,7 @@ struct buf {
   uint blockno;
   struct sleeplock lock;
   uint refcnt;
+  uint referenced; // Is the buffer referenced recently?
   uchar data[BSIZE];
 };
 
