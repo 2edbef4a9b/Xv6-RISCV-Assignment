@@ -56,8 +56,8 @@ find(uint dev, uint blockno)
   bucket = &bcache.buckets[hashval];
 
   while(bucket->next){
-    if(bucket->dev == dev && bucket->blockno == blockno)
-      return bucket->bufidx;
+    if(bucket->next->dev == dev && bucket->next->blockno == blockno)
+      return bucket->next->bufidx;
     bucket = bucket->next;
   }
   return -1; // Not found.
@@ -215,14 +215,12 @@ bget(uint dev, uint blockno)
     buf = &bcache.buf[bufidx];
     if(buf->refcnt == 0){ 
       // Found a free buffer.
-      printf("bget: evicting buffer %d for dev %d block %d\n", bufidx, dev, blockno);
-      erase(dev, blockno); // Remove any existing entry.
-      insert(dev, blockno, bufidx);
-
+      erase(buf->dev, buf->blockno);
       buf->dev = dev;
       buf->blockno = blockno;
       buf->valid = 0;
       buf->refcnt = 1;
+      insert(dev, blockno, bufidx);
       release(&bcache.lock);
       acquiresleep(&buf->lock);
       return buf;
