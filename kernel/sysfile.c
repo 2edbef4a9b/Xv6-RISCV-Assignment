@@ -345,7 +345,7 @@ sys_open(void)
         end_op();
         return -1;
       }
-      iunlock(ip);
+      iunlockput(ip);
       if((ip = namei(path)) == 0){
         end_op();
         return -1;
@@ -540,7 +540,6 @@ sys_symlink(void)
 
   begin_op();
   if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
-    iunlockput(ip);
     end_op();
     return -1;
   }
