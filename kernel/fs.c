@@ -420,12 +420,10 @@ bmap(struct inode *ip, uint bn)
 
   if(bn < NDINDIRECT){
     // Load double indirect block, allocating if necessary.
-    printf("bmap: Loading double indirect block for bn %d\n", bn);
     if((addr = ip->addrs[NDIRECT + 1]) == 0){
       addr = balloc(ip->dev);
       if(addr == 0)
         return 0;
-      printf("bmap: Allocated double indirect block %d\n", addr);
       ip->addrs[NDIRECT + 1] = addr;
     }
     bp = bread(ip->dev, addr);
@@ -489,19 +487,20 @@ itrunc(struct inode *ip)
   }
 
   if(ip->addrs[NDIRECT + 1]){
-    printf("itrunc: freeing double indirect block %d\n", ip->addrs[NDIRECT + 1]);
     bp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
     a = (uint*)bp->data;
-    for(j = 0; j < NDINDIRECT; j++){
-      temp = bread(ip->dev, a[j]);
-      b = (uint*)temp->data;
-      for(k = 0; k < NINDIRECT; k++){
-        if(b[k])
-          bfree(ip->dev, b[k]);
+    for(j = 0; j < NINDIRECT; j++){
+      if(a[j]){
+        temp = bread(ip->dev, a[j]);
+        b = (uint*)temp->data;
+        for(k = 0; k < NINDIRECT; k++){
+          if(b[k])
+            bfree(ip->dev, b[k]);
+        }
+        brelse(temp);
+        bfree(ip->dev, a[j]);
+        a[j] = 0;
       }
-      brelse(temp);
-      bfree(ip->dev, a[j]);
-      a[j] = 0;
     }
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT + 1]);
