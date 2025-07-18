@@ -347,9 +347,7 @@ iput(struct inode *ip)
 
     release(&itable.lock);
 
-    printf("iput: truncating and freeing inode %p\n", ip);
     itrunc(ip);
-    printf("iput: freeing inode %p\n", ip);
     ip->type = 0;
     iupdate(ip);
     ip->valid = 0;
@@ -471,10 +469,6 @@ itrunc(struct inode *ip)
   struct buf *bp, *temp;
   uint *a, *b;
 
-  for(i = 0; i < NDIRECT + 2; i++){
-    printf("itrunc: freeing block %d\n", ip->addrs[i]);
-  }
-
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
@@ -494,7 +488,7 @@ itrunc(struct inode *ip)
     ip->addrs[NDIRECT] = 0;
   }
 
-  if(ip->addrs[NDIRECT + 1] > 2){
+  if(ip->addrs[NDIRECT + 1]){
     printf("itrunc: freeing double indirect block %d\n", ip->addrs[NDIRECT + 1]);
     bp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
     a = (uint*)bp->data;

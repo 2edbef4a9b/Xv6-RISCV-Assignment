@@ -533,6 +533,7 @@ sys_symlink(void)
 {
   char target[MAXPATH], path[MAXPATH];
   struct inode *ip;
+  uint length;
 
   argstr(0, target, MAXPATH);
   argstr(1, path, MAXPATH);
@@ -543,7 +544,8 @@ sys_symlink(void)
     end_op();
     return -1;
   }
-  if(writei(ip, 0, (uint64)target, 0, strlen(target) + 1) < 0){
+  length = strlen(target) + 1;
+  if(writei(ip, 0, (uint64)target, 0, length) != length){
     iunlockput(ip);
     end_op();
     return -1;
