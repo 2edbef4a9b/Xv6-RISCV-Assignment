@@ -693,3 +693,57 @@ procdump(void)
     printf("\n");
   }
 }
+
+void*
+mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
+{
+  int i;
+  struct proc *p;
+  struct vma *vma;
+
+  p = myproc();
+
+  if(addr != 0 && ((uint64)addr < MMAPBASE || (uint64)addr >= MMAPTOP)){
+    printf("mmap: invalid address %p\n", addr);
+    return (void*)-1;
+  }
+
+  if(length <= 0 || length > MMAPSIZE){
+    printf("mmap: invalid length %d\n", length);
+    return (void*)-1;
+  }
+
+  if(fd < 0 || fd >= NOFILE || p->ofile[fd] == 0){
+    printf("mmap: invalid file descriptor %d\n", fd);
+    return (void*)-1;
+  }
+
+  if(offset != 0){
+    printf("mmap: only offset 0 is supported\n");
+    return (void*)-1;
+  }
+
+  for(i = 0; i < NVMA; i++){
+    vma = p->vmas[i];
+    if(!vma)
+      break;
+  }
+  if(i == NVMA){
+    printf("mmap: no free VMA slots\n");
+    return (void*)-1;
+  }
+
+  vma = (struct vma*)kalloc();
+  if(vma == 0){
+    printf("mmap: memory allocation failed\n");
+    return (void*)-1;
+  }
+  vma->start = MMAPBASE + i * MMAPSIZE;
+  vma->length = length;
+  vma->prot = prot;
+  vma->flags = flags;
+  vma->file = p->ofile[fd];
+  filedup(vma->file); // Increment file reference count
+
+  return (void*)vma->start;
+}

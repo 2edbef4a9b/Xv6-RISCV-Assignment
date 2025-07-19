@@ -79,6 +79,14 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
+struct vma {
+  uint64 start;      // Start address of the VMA.
+  uint64 length;     // Length of the VMA.
+  int prot;          // Protection flags (read, write, execute).
+  int flags;         // Flags (shared, private, etc.).
+  struct file *file; // Associated file, if any.
+};
+
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
@@ -99,6 +107,7 @@ struct proc {
   uint64 kstack;               // Virtual address of kernel stack
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
+  struct vma *vmas[NVMA];      // Virtual Memory Areas
   struct trapframe *trapframe; // data page for trampoline.S
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files

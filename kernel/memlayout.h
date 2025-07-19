@@ -57,3 +57,8 @@
 //   TRAPFRAME (p->trapframe, used by the trampoline)
 //   TRAMPOLINE (the same page as in the kernel)
 #define TRAPFRAME (TRAMPOLINE - PGSIZE)
+
+// mmap allocations.
+#define MMAPBASE 0x200000000L                  // Base address for mmap allocations.
+#define MMAPTOP (MMAPBASE + 0x20000000L)       // Top address for mmap allocations.
+#define MMAPSIZE ((MMAPTOP - MMAPBASE) / NVMA) // Maximum size of each mmap allocation.
