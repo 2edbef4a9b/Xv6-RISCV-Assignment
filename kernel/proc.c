@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 struct cpu cpus[NCPU];
 
@@ -743,7 +747,11 @@ mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
   vma->prot = prot;
   vma->flags = flags;
   vma->file = p->ofile[fd];
-  filedup(vma->file); // Increment file reference count
+
+  // Increment the reference count of the file and inode.
+  filedup(vma->file);
+  idup(vma->file->ip);
+  p->vmas[i] = vma;
 
   return (void*)vma->start;
 }

@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -66,6 +70,8 @@ usertrap(void)
 
     syscall();
   } else if((which_dev = devintr()) != 0){
+    // ok
+  } else if((r_scause() == 0xd) && (handlemmap() == 0)){
     // ok
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
@@ -216,3 +222,69 @@ devintr()
   }
 }
 
+int
+handlemmap()
+{
+  struct proc *p;
+  struct vma *vma;
+  char *mem;
+  uint64 addr, offset;
+  int vmaidx, perm;
+
+  p = myproc();
+  addr = r_stval();
+
+  printf("handlemmap: addr=0x%lx\n", addr);
+
+  if(addr < MMAPBASE || addr >= MMAPTOP){
+    printf("handlemmap: not a valid mmap address 0x%lx\n", addr);
+    return -1;
+  }
+
+  vmaidx = (addr - MMAPBASE) / MMAPSIZE;
+  vma = p->vmas[vmaidx];
+  if(vma == 0){
+    printf("handlemmap: no VMA at index %d for address 0x%lx\n", vmaidx, addr);
+    return -1;
+  }
+
+  if(addr > vma->start + vma->length){
+    printf("handlemmap: unmapped address 0x%lx in VMA at index %d\n", addr, vmaidx);
+    return -1;
+  }
+
+  mem = (char*)kalloc();
+  if(mem == 0){
+    printf("handlemmap: memory allocation failed for address 0x%lx\n", addr);
+    return -1;
+  }
+  memset(mem, 0, PGSIZE);
+
+  offset = PGROUNDDOWN(addr - vma->start);
+  
+  ilock(vma->file->ip);
+  if(readi(vma->file->ip, 0, (uint64)mem, offset, PGSIZE) < 0){
+    printf("handlemmap: read failed for address 0x%lx, offset %lu\n", addr, offset);
+    iunlockput(vma->file->ip);
+    kfree(mem);
+    return -1;
+  }
+  iunlockput(vma->file->ip);
+
+  perm = PTE_U;
+  if(vma->prot & PROT_READ)
+    perm |= PTE_R;
+  if(vma->prot & PROT_WRITE)
+    perm |= PTE_W;
+  if(vma->prot & PROT_EXEC)
+    perm |= PTE_X;
+
+  printf("handlemmap: mapping address 0x%lx to memory at %p with perm %d\n", addr, mem, perm);
+  if(mappages(p->pagetable, addr, PGSIZE, (uint64)mem, perm) < 0){
+    printf("handlemmap: mmap failed for address 0x%lx\n", addr);
+    kfree(mem);
+    return -1;
+  }
+
+  return 0;
+}
