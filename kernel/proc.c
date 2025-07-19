@@ -285,9 +285,10 @@ growproc(int n)
 int
 fork(void)
 {
-  int i, pid;
+  int i, j, pid;
   struct proc *np;
   struct proc *p = myproc();
+  struct vma *vma;
 
   // Allocate process.
   if((np = allocproc()) == 0){
@@ -315,6 +316,33 @@ fork(void)
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
+
+  // copy mapped virtual memory areas.
+  for(i = 0; i < NVMA; i++){
+    vma = p->vmas[i];
+    if(vma){
+      np->vmas[i] = (struct vma*)kalloc();
+      if(np->vmas[i] == 0){
+        printf("fork: failed to allocate VMA for child process\n");
+        for(j = 0; j < i; j++){
+          if(np->vmas[j]){
+            kfree((void*)np->vmas[j]);
+            np->vmas[j] = 0;
+          }
+        }
+        freeproc(np);
+        release(&np->lock);
+        return -1;
+      }
+      np->vmas[i]->start = vma->start;
+      np->vmas[i]->length = vma->length;
+      np->vmas[i]->prot = vma->prot;
+      np->vmas[i]->flags = vma->flags;
+      np->vmas[i]->file = vma->file;
+      filedup(vma->file); // increment file reference count
+      idup(vma->file->ip); // increment inode reference count
+    }
+  }
 
   pid = np->pid;
 
@@ -353,6 +381,8 @@ void
 exit(int status)
 {
   struct proc *p = myproc();
+  struct vma *vma;
+  int vmaidx;
 
   if(p == initproc)
     panic("init exiting");
@@ -365,6 +395,20 @@ exit(int status)
       p->ofile[fd] = 0;
     }
   }
+
+  // Unmap all the mapped virtual memory areas.
+  printf("exit: unmapping all VMA for process %d\n", p->pid);
+  for(vmaidx = 0; vmaidx < NVMA; vmaidx++){
+    vma = p->vmas[vmaidx];
+    if(vma){
+      uint64 start = vma->start;
+      uint64 length = vma->length;
+      if(munmap((void *)start, length) < 0){
+        printf("exit: munmap failed for VMA at index %d\n", vmaidx);
+      }
+    }
+  }
+  printf("exit: all VMA unmapped for process %d\n", p->pid);
 
   begin_op();
   iput(p->cwd);
@@ -769,11 +813,12 @@ munmap(void *addr, uint length)
   struct proc *p;
   struct vma *vma;
   pte_t *pte;
-  uint64 va;
-  uint wsize;
-  int vmaidx;
+  uint64 va, start;
+  uint rwsize;
+  int vmaidx, update_start;
 
   p = myproc();
+
   if((uint64)addr < MMAPBASE || (uint64)addr >= MMAPTOP){
     printf("munmap: invalid address %p\n", addr);
     return -1;
@@ -784,7 +829,7 @@ munmap(void *addr, uint length)
     return -1;
   }
 
-  va = PGROUNDDOWN((uint64)addr);
+  start = va = PGROUNDDOWN((uint64)addr);
   length = PGROUNDUP(length);
   vmaidx = (va - MMAPBASE) / MMAPSIZE;
   vma = p->vmas[vmaidx];
@@ -794,34 +839,41 @@ munmap(void *addr, uint length)
     return -1;
   }
 
-  if(va + length > vma->start + vma->length) {
-    printf("munmap: range %p to %p exceeds VMA bounds %p to %p\n",
-           (void*)va, (void*)(va + length), (void*)vma->start, (void*)(vma->start + vma->length));
+  if(va < vma->start || va + length > vma->start + vma->length){
+    printf("munmap: range %p to %p exceeds VMA bounds %p to %p\n", (void *)va,
+           (void *)(va + length), (void *)vma->start, (void *)(vma->start + vma->length));
     return -1;
   }
 
-  // Unmap the pages in the VMA range.
-  wsize = vma->file->ip->size - (va - vma->start);
+  // Calculate the max remaining writable size of the file.
+  rwsize = vma->file->ip->size - (va - vma->start);
+  update_start = (start == vma->start);
   while(length > 0){
     pte = walk(p->pagetable, va, 0);
     // Unmap the page if it exists.
     if(pte && (*pte & PTE_V)){
       // If the page is dirty and the mapping is shared, write it back to the file.
       if((*pte & PTE_D) && (vma->flags & MAP_SHARED)){
-        if(filewrite(vma->file, va, min(PGSIZE, wsize)) < 0){
-        printf("munmap: failed to write back dirty page at %p\n", (void*)va);
-        return -1; 
-      } 
-    }
-    uvmunmap(p->pagetable, va, 1, 1);
+        if(filewrite(vma->file, va, min(PGSIZE, rwsize)) < 0){
+          printf("munmap: failed to write back dirty page at %p\n", (void*)va);
+          return -1; 
+        } 
+      }
+      uvmunmap(p->pagetable, va, 1, 1);
     }
     length -= PGSIZE;
-    wsize -= PGSIZE;
+    rwsize -= PGSIZE;
     va += PGSIZE;
+
+    // Update the VMA structure.
+    vma->length -= PGSIZE;
+    if(update_start){
+      vma->start += PGSIZE;
+    }
   }
 
   // Free the VMA structure if all pages in the VMA have been unmapped.
-  if(va == vma->start + vma->length && PGROUNDDOWN((uint64)addr) == vma->start){
+  if(vma->length == 0){
     // Decrement the reference count of the file and inode.
     fileclose(vma->file);
     kfree((void*)vma);

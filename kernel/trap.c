@@ -71,7 +71,7 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else if((r_scause() == 0xd) && (handlemmap() == 0)){
+  } else if(((r_scause() == 0xd) || (r_scause() == 0xf)) && (handlemmap() == 0)){
     // ok
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
@@ -246,8 +246,8 @@ handlemmap()
     return -1;
   }
 
-  if(addr > vma->start + vma->length){
-    printf("handlemmap: unmapped address 0x%lx in VMA at index %d\n", addr, vmaidx);
+  if(addr < vma->start || addr >= vma->start + vma->length){
+    printf("handlemmap: unmmapped address 0x%lx in VMA at index %d\n", addr, vmaidx);
     return -1;
   }
 
