@@ -111,6 +111,7 @@ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
 void*           mmap(void *addr, uint length, int prot, int flags, int fd, int offset);
+int             munmap(void *addr, uint length);
 
 // swtch.S
 void            swtch(struct context*, struct context*);

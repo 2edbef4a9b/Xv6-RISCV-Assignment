@@ -701,9 +701,9 @@ procdump(void)
 void*
 mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
 {
-  int i;
   struct proc *p;
   struct vma *vma;
+  int vmaidx;
 
   p = myproc();
 
@@ -727,12 +727,12 @@ mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     return (void*)-1;
   }
 
-  for(i = 0; i < NVMA; i++){
-    vma = p->vmas[i];
+  for(vmaidx = 0; vmaidx < NVMA; vmaidx++){
+    vma = p->vmas[vmaidx];
     if(!vma)
       break;
   }
-  if(i == NVMA){
+  if(vmaidx == NVMA){
     printf("mmap: no free VMA slots\n");
     return (void*)-1;
   }
@@ -742,7 +742,7 @@ mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     printf("mmap: memory allocation failed\n");
     return (void*)-1;
   }
-  vma->start = MMAPBASE + i * MMAPSIZE;
+  vma->start = MMAPBASE + vmaidx * MMAPSIZE;
   vma->length = length;
   vma->prot = prot;
   vma->flags = flags;
@@ -751,7 +751,77 @@ mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
   // Increment the reference count of the file and inode.
   filedup(vma->file);
   idup(vma->file->ip);
-  p->vmas[i] = vma;
+  p->vmas[vmaidx] = vma;
 
   return (void*)vma->start;
+}
+
+int
+munmap(void *addr, uint length)
+{
+  struct proc *p;
+  struct vma *vma;
+  pte_t *pte;
+  uint64 va;
+  int vmaidx;
+
+  p = myproc();
+  if((uint64)addr < MMAPBASE || (uint64)addr >= MMAPTOP){
+    printf("munmap: invalid address %p\n", addr);
+    return -1;
+  }
+
+  if(length <= 0 || length > MMAPSIZE){
+    printf("munmap: invalid length %d\n", length);
+    return -1;
+  }
+
+  va = PGROUNDDOWN((uint64)addr);
+  length = PGROUNDUP(length);
+  vmaidx = (va - MMAPBASE) / MMAPSIZE;
+  vma = p->vmas[vmaidx];
+
+  printf("munmap: unmapping %p with length %d\n", addr, length);
+
+  if(!vma){
+    printf("munmap: no VMA found for address %p\n", addr);
+    return -1;
+  }
+
+  if(va + length > vma->start + vma->length) {
+    printf("munmap: range %p to %p exceeds VMA bounds %p to %p\n",
+           (void*)va, (void*)(va + length), (void*)vma->start, (void*)(vma->start + vma->length));
+    return -1;
+  }
+
+  // Unmap the pages in the VMA range.
+  while(length > 0){
+    pte = walk(p->pagetable, va, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0){
+      printf("munmap: no valid page at %p\n", (void*)va);
+      return -1; 
+    }
+    if((*pte & PTE_D) && (vma->flags & MAP_SHARED)){
+      // If the page is dirty and the mapping is shared, write it back to the file.
+      if(filewrite(vma->file, va, PGSIZE) < 0){
+        printf("munmap: failed to write back dirty page at %p\n", (void*)va);
+        return -1; 
+      } 
+    }
+
+    uvmunmap(p->pagetable, va, 1, 1);
+    va += PGSIZE;
+    length -= PGSIZE;
+  }
+
+  // Free the VMA structure if all pages in the VMA have been unmapped.
+  if(va == vma->start + vma->length && PGROUNDDOWN((uint64)addr) == vma->start){
+    // Decrement the reference count of the file and inode.
+    fileclose(vma->file);
+    iput(vma->file->ip);
+    kfree((void*)vma);
+    p->vmas[vmaidx] = 0;
+  }
+
+  return 0;
 }

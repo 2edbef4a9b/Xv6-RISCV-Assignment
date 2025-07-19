@@ -111,6 +111,11 @@ sys_mmap(void)
 uint64
 sys_munmap(void)
 {
+  uint64 addr;
+  int length;
 
-  return -1;
+  argaddr(0, &addr);
+  argint(1, &length);
+
+  return munmap((void *)addr, length);
 }
