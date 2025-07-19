@@ -722,6 +722,11 @@ mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     return (void*)-1;
   }
 
+  if((prot & PROT_WRITE) && (flags & MAP_SHARED) && !(p->ofile[fd]->writable)){
+    printf("mmap: file descriptor %d is not writable\n", fd);
+    return (void*)-1;
+  }
+
   if(offset != 0){
     printf("mmap: only offset 0 is supported\n");
     return (void*)-1;
@@ -780,8 +785,6 @@ munmap(void *addr, uint length)
   length = PGROUNDUP(length);
   vmaidx = (va - MMAPBASE) / MMAPSIZE;
   vma = p->vmas[vmaidx];
-
-  printf("munmap: unmapping %p with length %d\n", addr, length);
 
   if(!vma){
     printf("munmap: no VMA found for address %p\n", addr);

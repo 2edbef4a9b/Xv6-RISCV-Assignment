@@ -234,8 +234,6 @@ handlemmap()
   p = myproc();
   addr = r_stval();
 
-  printf("handlemmap: addr=0x%lx\n", addr);
-
   if(addr < MMAPBASE || addr >= MMAPTOP){
     printf("handlemmap: not a valid mmap address 0x%lx\n", addr);
     return -1;
@@ -265,11 +263,11 @@ handlemmap()
   ilock(vma->file->ip);
   if(readi(vma->file->ip, 0, (uint64)mem, offset, PGSIZE) < 0){
     printf("handlemmap: read failed for address 0x%lx, offset %lu\n", addr, offset);
-    iunlockput(vma->file->ip);
+    iunlock(vma->file->ip);
     kfree(mem);
     return -1;
   }
-  iunlockput(vma->file->ip);
+  iunlock(vma->file->ip);
 
   perm = PTE_U;
   if(vma->prot & PROT_READ)
@@ -279,7 +277,6 @@ handlemmap()
   if(vma->prot & PROT_EXEC)
     perm |= PTE_X;
 
-  printf("handlemmap: mapping address 0x%lx to memory at %p with perm %d\n", addr, mem, perm);
   if(mappages(p->pagetable, addr, PGSIZE, (uint64)mem, perm) < 0){
     printf("handlemmap: mmap failed for address 0x%lx\n", addr);
     kfree(mem);
