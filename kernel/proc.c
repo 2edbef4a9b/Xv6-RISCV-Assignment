@@ -30,6 +30,8 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -768,6 +770,7 @@ munmap(void *addr, uint length)
   struct vma *vma;
   pte_t *pte;
   uint64 va;
+  uint wsize;
   int vmaidx;
 
   p = myproc();
@@ -798,30 +801,29 @@ munmap(void *addr, uint length)
   }
 
   // Unmap the pages in the VMA range.
+  wsize = vma->file->ip->size - (va - vma->start);
   while(length > 0){
     pte = walk(p->pagetable, va, 0);
-    if(pte == 0 || (*pte & PTE_V) == 0){
-      printf("munmap: no valid page at %p\n", (void*)va);
-      return -1; 
-    }
-    if((*pte & PTE_D) && (vma->flags & MAP_SHARED)){
+    // Unmap the page if it exists.
+    if(pte && (*pte & PTE_V)){
       // If the page is dirty and the mapping is shared, write it back to the file.
-      if(filewrite(vma->file, va, PGSIZE) < 0){
+      if((*pte & PTE_D) && (vma->flags & MAP_SHARED)){
+        if(filewrite(vma->file, va, min(PGSIZE, wsize)) < 0){
         printf("munmap: failed to write back dirty page at %p\n", (void*)va);
         return -1; 
       } 
     }
-
     uvmunmap(p->pagetable, va, 1, 1);
-    va += PGSIZE;
+    }
     length -= PGSIZE;
+    wsize -= PGSIZE;
+    va += PGSIZE;
   }
 
   // Free the VMA structure if all pages in the VMA have been unmapped.
   if(va == vma->start + vma->length && PGROUNDDOWN((uint64)addr) == vma->start){
     // Decrement the reference count of the file and inode.
     fileclose(vma->file);
-    iput(vma->file->ip);
     kfree((void*)vma);
     p->vmas[vmaidx] = 0;
   }
