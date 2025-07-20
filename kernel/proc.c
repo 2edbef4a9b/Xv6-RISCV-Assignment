@@ -397,7 +397,6 @@ exit(int status)
   }
 
   // Unmap all the mapped virtual memory areas.
-  printf("exit: unmapping all VMA for process %d\n", p->pid);
   for(vmaidx = 0; vmaidx < NVMA; vmaidx++){
     vma = p->vmas[vmaidx];
     if(vma){
@@ -408,7 +407,6 @@ exit(int status)
       }
     }
   }
-  printf("exit: all VMA unmapped for process %d\n", p->pid);
 
   begin_op();
   iput(p->cwd);
@@ -845,9 +843,15 @@ munmap(void *addr, uint length)
     return -1;
   }
 
+  // Seek the file to the start of the VMA.
+  vma->file->off = va - (MMAPBASE + vmaidx * MMAPSIZE);
+
   // Calculate the max remaining writable size of the file.
-  rwsize = vma->file->ip->size - (va - vma->start);
+  rwsize = vma->file->ip->size - vma->file->off;
+
+  // If the VMA starts at the beginning, we need to update the start.
   update_start = (start == vma->start);
+
   while(length > 0){
     pte = walk(p->pagetable, va, 0);
     // Unmap the page if it exists.
@@ -857,7 +861,7 @@ munmap(void *addr, uint length)
         if(filewrite(vma->file, va, min(PGSIZE, rwsize)) < 0){
           printf("munmap: failed to write back dirty page at %p\n", (void*)va);
           return -1; 
-        } 
+        }
       }
       uvmunmap(p->pagetable, va, 1, 1);
     }
