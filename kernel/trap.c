@@ -71,7 +71,7 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else if(((r_scause() == 0xd) || (r_scause() == 0xf)) && (handlemmap() == 0)){
+  } else if(handlemmap() == 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
@@ -228,11 +228,15 @@ handlemmap()
   struct proc *p;
   struct vma *vma;
   char *mem;
-  uint64 addr, offset;
+  uint64 addr, offset, scause;
   int vmaidx, perm;
 
   p = myproc();
   addr = r_stval();
+  scause = r_scause();
+
+  if(scause != 0xd && scause != 0xf)
+    return -1;
 
   if(addr < MMAPBASE || addr >= MMAPTOP){
     printf("handlemmap: not a valid mmap address 0x%lx\n", addr);
@@ -248,6 +252,11 @@ handlemmap()
 
   if(addr < vma->start || addr >= vma->start + vma->length){
     printf("handlemmap: unmmapped address 0x%lx in VMA at index %d\n", addr, vmaidx);
+    return -1;
+  }
+
+  if(scause == 0xf && (vma->prot & PROT_WRITE) == 0 && (vma->flags & MAP_SHARED)) {
+    printf("handlemmap: write access to read-only mapping at address 0x%lx\n", addr);
     return -1;
   }
 
