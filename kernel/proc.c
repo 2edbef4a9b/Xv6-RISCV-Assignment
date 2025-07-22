@@ -235,7 +235,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   // Prevent double free of USYSCALL page.
   pte_t *pte = walk(pagetable, USYSCALL, 0);
   if(pte && (*pte & PTE_V)) {
-    uvmunmap(pagetable, USYSCALL, 1, 0);
+    uvmunmap(pagetable, USYSCALL, 1, 1);
   }
 
   uvmfree(pagetable, sz);
