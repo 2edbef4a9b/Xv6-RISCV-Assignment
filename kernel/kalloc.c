@@ -14,8 +14,9 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+// Double linked list.
 struct run {
-  struct run *next;
+  struct run *prev, *next;
 };
 
 struct {
@@ -34,9 +35,24 @@ void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
+  struct run *r;
+
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
-    kfree(p);
+  acquire(&kmem.lock);
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
+    // Fill with junk to catch dangling refs.
+    memset(p, 1, PGSIZE);
+    r = (struct run*)p;
+    if(kmem.freelist){
+      kmem.freelist->prev = r;
+      r->next = kmem.freelist;
+    } else {
+      r->next = 0;
+    }
+    r->prev = 0;
+    kmem.freelist = r;
+  }
+  release(&kmem.lock);
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -57,7 +73,13 @@ kfree(void *pa)
   r = (struct run*)pa;
 
   acquire(&kmem.lock);
-  r->next = kmem.freelist;
+  if(kmem.freelist){
+    kmem.freelist->prev = r;
+    r->next = kmem.freelist;
+  } else {
+    r->next = 0;
+  }
+  r->prev = 0;
   kmem.freelist = r;
   release(&kmem.lock);
 }
@@ -72,8 +94,14 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
+  if(r){
+    if(r->next){
+      kmem.freelist = r->next;
+      kmem.freelist->prev = 0;
+    } else {
+      kmem.freelist = 0;
+    }
+  }
   release(&kmem.lock);
 
   if(r)
