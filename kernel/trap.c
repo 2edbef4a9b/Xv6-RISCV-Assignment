@@ -235,40 +235,50 @@ handlemmap()
   addr = r_stval();
   scause = r_scause();
 
+  // Check if the scause indicates a page fault.
   if(scause != 0xd && scause != 0xf)
     return -1;
 
+  // Check if the address is within the mmap range.
   if(addr < MMAPBASE || addr >= MMAPTOP){
     printf("handlemmap: not a valid mmap address 0x%lx\n", addr);
     return -1;
   }
 
   vmaidx = (addr - MMAPBASE) / MMAPSIZE;
-  vma = p->vmas[vmaidx];
-  if(vma == 0){
+  vma = &p->vmas[vmaidx];
+
+  // Check if the VMA exists and is valid.
+  if(vma->length == 0){
     printf("handlemmap: no VMA at index %d for address 0x%lx\n", vmaidx, addr);
     return -1;
   }
 
+  // Check if the address is within the bounds of the VMA.
   if(addr < vma->start || addr >= vma->start + vma->length){
     printf("handlemmap: unmmapped address 0x%lx in VMA at index %d\n", addr, vmaidx);
     return -1;
   }
 
+  // Check if the access is allowed based on the VMA's protection flags.
   if(scause == 0xf && (vma->prot & PROT_WRITE) == 0 && (vma->flags & MAP_SHARED)) {
     printf("handlemmap: write access to read-only mapping at address 0x%lx\n", addr);
     return -1;
   }
 
+  // Allocate memory for the page.
   mem = (char*)kalloc();
   if(mem == 0){
     printf("handlemmap: memory allocation failed for address 0x%lx\n", addr);
     return -1;
   }
+
+  // Remove the junk data from the allocated memory.
   memset(mem, 0, PGSIZE);
 
   offset = PGROUNDDOWN(addr - vma->start);
-  
+ 
+  // Read the data from the file associated with the VMA.
   ilock(vma->file->ip);
   if(readi(vma->file->ip, 0, (uint64)mem, offset, PGSIZE) < 0){
     printf("handlemmap: read failed for address 0x%lx, offset %lu\n", addr, offset);
@@ -278,6 +288,7 @@ handlemmap()
   }
   iunlock(vma->file->ip);
 
+  // Set the permissions for the page.
   perm = PTE_U;
   if(vma->prot & PROT_READ)
     perm |= PTE_R;
@@ -286,6 +297,7 @@ handlemmap()
   if(vma->prot & PROT_EXEC)
     perm |= PTE_X;
 
+  // Map the page into the process's page table.
   if(mappages(p->pagetable, addr, PGSIZE, (uint64)mem, perm) < 0){
     printf("handlemmap: mmap failed for address 0x%lx\n", addr);
     kfree(mem);

@@ -285,10 +285,9 @@ growproc(int n)
 int
 fork(void)
 {
-  int i, j, pid;
+  int i, pid;
   struct proc *np;
   struct proc *p = myproc();
-  struct vma *vma;
 
   // Allocate process.
   if((np = allocproc()) == 0){
@@ -319,28 +318,10 @@ fork(void)
 
   // copy mapped virtual memory areas.
   for(i = 0; i < NVMA; i++){
-    vma = p->vmas[i];
-    if(vma){
-      np->vmas[i] = (struct vma*)kalloc();
-      if(np->vmas[i] == 0){
-        printf("fork: failed to allocate VMA for child process\n");
-        for(j = 0; j < i; j++){
-          if(np->vmas[j]){
-            kfree((void*)np->vmas[j]);
-            np->vmas[j] = 0;
-          }
-        }
-        freeproc(np);
-        release(&np->lock);
-        return -1;
-      }
-      np->vmas[i]->start = vma->start;
-      np->vmas[i]->length = vma->length;
-      np->vmas[i]->prot = vma->prot;
-      np->vmas[i]->flags = vma->flags;
-      np->vmas[i]->file = vma->file;
-      filedup(vma->file); // increment file reference count
-      idup(vma->file->ip); // increment inode reference count
+    np->vmas[i] = p->vmas[i];
+    if(p->vmas[i].length > 0){
+      filedup(np->vmas[i].file);  // Increment file reference count.
+      idup(np->vmas[i].file->ip); // Increment inode reference count.
     }
   }
 
@@ -382,6 +363,7 @@ exit(int status)
 {
   struct proc *p = myproc();
   struct vma *vma;
+  uint64 start, length;
   int vmaidx;
 
   if(p == initproc)
@@ -398,10 +380,10 @@ exit(int status)
 
   // Unmap all the mapped virtual memory areas.
   for(vmaidx = 0; vmaidx < NVMA; vmaidx++){
-    vma = p->vmas[vmaidx];
-    if(vma){
-      uint64 start = vma->start;
-      uint64 length = vma->length;
+    vma = &p->vmas[vmaidx];
+    if(vma->length){
+      start = vma->start;
+      length = vma->length;
       if(munmap((void *)start, length) < 0){
         printf("exit: munmap failed for VMA at index %d\n", vmaidx);
       }
@@ -751,34 +733,39 @@ mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
 
   p = myproc();
 
+  // Check if the address is within the valid mmap range.
   if(addr != 0 && ((uint64)addr < MMAPBASE || (uint64)addr >= MMAPTOP)){
     printf("mmap: invalid address %p\n", addr);
     return (void*)-1;
   }
 
+  // Check if the length is valid.
   if(length <= 0 || length > MMAPSIZE){
     printf("mmap: invalid length %d\n", length);
     return (void*)-1;
   }
 
+  // Check if the file descriptor is valid.
   if(fd < 0 || fd >= NOFILE || p->ofile[fd] == 0){
     printf("mmap: invalid file descriptor %d\n", fd);
     return (void*)-1;
   }
 
+  // Check if the protect flags are valid.
   if((prot & PROT_WRITE) && (flags & MAP_SHARED) && !(p->ofile[fd]->writable)){
     printf("mmap: file descriptor %d is not writable\n", fd);
     return (void*)-1;
   }
 
+  // Check if the offset is valid.
   if(offset != 0){
     printf("mmap: only offset 0 is supported\n");
     return (void*)-1;
   }
 
+  // Find a free VMA slot.
   for(vmaidx = 0; vmaidx < NVMA; vmaidx++){
-    vma = p->vmas[vmaidx];
-    if(!vma)
+    if(p->vmas[vmaidx].length == 0)
       break;
   }
   if(vmaidx == NVMA){
@@ -786,11 +773,7 @@ mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     return (void*)-1;
   }
 
-  vma = (struct vma*)kalloc();
-  if(vma == 0){
-    printf("mmap: memory allocation failed\n");
-    return (void*)-1;
-  }
+  vma = &p->vmas[vmaidx];
   vma->start = MMAPBASE + vmaidx * MMAPSIZE;
   vma->length = length;
   vma->prot = prot;
@@ -800,7 +783,6 @@ mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
   // Increment the reference count of the file and inode.
   filedup(vma->file);
   idup(vma->file->ip);
-  p->vmas[vmaidx] = vma;
 
   return (void*)vma->start;
 }
@@ -817,11 +799,13 @@ munmap(void *addr, uint length)
 
   p = myproc();
 
+  // Check if the address is within the valid mmap range.
   if((uint64)addr < MMAPBASE || (uint64)addr >= MMAPTOP){
     printf("munmap: invalid address %p\n", addr);
     return -1;
   }
 
+  // Check if the length is valid.
   if(length <= 0 || length > MMAPSIZE){
     printf("munmap: invalid length %d\n", length);
     return -1;
@@ -830,13 +814,15 @@ munmap(void *addr, uint length)
   start = va = PGROUNDDOWN((uint64)addr);
   length = PGROUNDUP(length);
   vmaidx = (va - MMAPBASE) / MMAPSIZE;
-  vma = p->vmas[vmaidx];
+  vma = &p->vmas[vmaidx];
 
-  if(!vma){
+  // Check if the VMA exists and is valid.
+  if(vma->length == 0){
     printf("munmap: no VMA found for address %p\n", addr);
     return -1;
   }
 
+  // Check if the address range is within the VMA bounds.
   if(va < vma->start || va + length > vma->start + vma->length){
     printf("munmap: range %p to %p exceeds VMA bounds %p to %p\n", (void *)va,
            (void *)(va + length), (void *)vma->start, (void *)(vma->start + vma->length));
@@ -876,12 +862,10 @@ munmap(void *addr, uint length)
     }
   }
 
-  // Free the VMA structure if all pages in the VMA have been unmapped.
+  // Close the file if the VMA is now empty.
   if(vma->length == 0){
     // Decrement the reference count of the file and inode.
     fileclose(vma->file);
-    kfree((void*)vma);
-    p->vmas[vmaidx] = 0;
   }
 
   return 0;
