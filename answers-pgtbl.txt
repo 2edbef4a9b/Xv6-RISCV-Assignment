@@ -1,0 +1,61 @@
+**Page Table Entry (PTE) Format**:
+
+* `va`: Virtual address (4KB page aligned)
+* `pte`: Complete page table entry value
+* `pa`: Physical address (translated from PTE)
+* `perm`: Permission bits (lower 8 bits of PTE)
+
+**Permission Bits Decoding**:
+
+* 0x1 (1): Valid (V)
+* 0x2 (2): Readable (R)
+* 0x4 (4): Writable (W)
+* 0x8 (8): Executable (X)
+* 0x10 (16): User-accessible (U)
+* 0x20 (32): Global mapping (G)
+* 0x40 (64): Accessed (A)
+* 0x80 (128): Dirty (D)
+
+**Key Entries Analysis**:
+
+1. `va 0x0` (User text):
+
+* perm 0x5B (V+R+X+U+A+D): Executable code page
+* Maps to physical `0x87F22000`
+
+2. `va 0x1000` (User data):
+
+* perm 0x1B (V+R+U+A): Readable data page
+
+3. `va 0x2000` (User data):
+
+* perm 0x17 (V+R+W+A): Writable data page
+
+4. `va 0xFFFFE000` (Trampoline):
+
+* perm 0xC7 (V+R+W+A+D): Kernel/user shared page
+* Same physical page for all processes
+
+5. `va 0xFFFFF000` (Trapframe):
+
+* perm 0x4B (V+R+U+A): User-accessible kernel page
+* Used for trap handling
+
+**Zero Entries**:
+
+* Pages with pte 0x0 are unmapped
+* Seen in higher addresses (guard pages) and unused regions
+
+**Important Notes**:
+
+1. Physical pages are non-contiguous despite virtual continuity
+2. User pages have U-bit set (0x10)
+3. Kernel pages omit U-bit but remain user-accessible when needed (trapframe)
+4. RWX permissions follow expected patterns for text/data sections
+
+The output demonstrates how xv6:
+
+* Separates user/kernel spaces
+* Protects memory with proper permissions
+* Shares certain pages between kernel/user
+* Leaves guard pages unmapped for safety
