@@ -45,66 +45,19 @@ void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
-  struct run *r;
-
   p = (char*)PGROUNDUP((uint64)pa_start);
 
   // Add normal pages to the freelist until we reach the super page boundary.
-  for(; p + PGSIZE <= (char*)SUPERPGROUNDUP((uint64)pa_end); p += PGSIZE){
-    // Fill with junk to catch dangling refs.
-    memset(p, 1, PGSIZE);
-    r = (struct run*)p;
-    acquire(&kmem.lock);
-    if(kmem.freelist)
-      kmem.freelist->prev = r;
-    r->next = kmem.freelist;
-    r->prev = 0;
-    kmem.freelist = r;
-    release(&kmem.lock);
-
-    // Update free page count for this super page.
-    acquire(&freecount[USAGEIDX((uint64)p)].lock);
-    freecount[USAGEIDX((uint64)p)].count++;
-    release(&freecount[USAGEIDX((uint64)p)].lock);
-  }
+  for(; p + PGSIZE <= (char*)SUPERPGROUNDUP((uint64)pa_end); p += PGSIZE)
+    kfree(p);
 
   // Add super pages to the superlist.
-  for(; p + SUPERPGSIZE <= (char*)pa_end; p += SUPERPGSIZE){
-    // Fill with junk to catch dangling refs.
-    memset(p, 1, SUPERPGSIZE);
-    r = (struct run*)p;
-    acquire(&kmem.lock);
-    if(kmem.superlist)
-      kmem.superlist->prev = r;
-    r->next = kmem.superlist;
-    r->prev = 0;
-    kmem.superlist = r;
-    release(&kmem.lock);
-
-    // Update free page count for this super page.
-    acquire(&freecount[USAGEIDX((uint64)p)].lock);
-    freecount[USAGEIDX((uint64)p)].count = 512;
-    release(&freecount[USAGEIDX((uint64)p)].lock);
-  }
+  for(; p + SUPERPGSIZE <= (char*)pa_end; p += SUPERPGSIZE)
+    superfree(p);
 
   // Add remaining normal pages to the freelist.
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
-    // Fill with junk to catch dangling refs.
-    memset(p, 1, PGSIZE);
-    r = (struct run*)p;
-    acquire(&kmem.lock);
-    if(kmem.freelist)
-      kmem.freelist->prev = r;
-    r->next = kmem.freelist;
-    r->prev = 0;
-    kmem.freelist = r;
-    release(&kmem.lock);
-
-    // Update free page count for this super page.
-    acquire(&freecount[USAGEIDX((uint64)p)].lock);
-    freecount[USAGEIDX((uint64)p)].count++;
-    release(&freecount[USAGEIDX((uint64)p)].lock);
-  }
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+    kfree(p);
 }
 
 // Split a super page into normal pages.
@@ -237,5 +190,59 @@ kalloc(void)
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
+  return (void*)r;
+}
+
+// Free the super page of physical memory pointed at by pa.
+void
+superfree(void *pa)
+{
+  struct run *r;
+  
+  if(((uint64)pa % SUPERPGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("superfree");
+
+  // Fill with junk to catch dangling refs.
+  memset(pa, 1, SUPERPGSIZE);
+
+  r = (struct run*)pa;
+  acquire(&kmem.lock);
+  if(kmem.superlist)
+    kmem.superlist->prev = r;
+  r->next = kmem.superlist;
+  r->prev = 0;
+  kmem.superlist = r;
+  release(&kmem.lock);
+
+  // Update free page count for this super page.
+  acquire(&freecount[USAGEIDX((uint64)pa)].lock);
+  freecount[USAGEIDX((uint64)pa)].count = 512;
+  release(&freecount[USAGEIDX((uint64)pa)].lock);
+}
+
+// Allocate one 2MB super page of physical memory.
+void *
+superalloc(void)
+{
+  struct run *r;
+
+  acquire(&kmem.lock);
+  r = kmem.superlist;
+
+  if(r){
+    kmem.superlist = r->next;
+    if(kmem.superlist)
+      kmem.superlist->prev = 0;
+  }
+  release(&kmem.lock);
+
+  if(r){
+    acquire(&freecount[USAGEIDX((uint64)r)].lock);
+    freecount[USAGEIDX((uint64)r)].count = 0;
+    release(&freecount[USAGEIDX((uint64)r)].lock);
+  }
+
+  if(r)
+    memset((char*)r, 5, SUPERPGSIZE); // fill with junk
   return (void*)r;
 }
