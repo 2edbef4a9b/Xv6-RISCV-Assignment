@@ -616,27 +616,24 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 
 
 #ifdef LAB_PGTBL
-void vmprint_recursive(pagetable_t pagetable, uint64 va, int level){
+void
+vmprint_recursive(pagetable_t pagetable, uint64 va, int level)
+{
   pte_t pte;
   int i, j;
 
   for(i = 0; i < 512; i++) {
     pte = pagetable[i];
-    if((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X))){
-      // Base case, lowest level page table.
-      for(j = 0; j < level; j++){
-        printf(" ..");
-      } 
-      printf("0x%p: pte=0x%p, pa=0x%p\n", (void *)(va + (i << PGSHIFT)), (void *)pte,
-             (void *)PTE2PA(pte));
-    } else if(pte & PTE_V){
-      // Recursive case, higher level page table.
-      for(int j = 0; j < level; j++){
+    if(pte & PTE_V) {
+      for(j = 3; j > level; j--) {
         printf(" ..");
       }
-      printf("0x%p: pte=0x%p, pa=0x%p\n", (void *)(va + (i << PGSHIFT)), (void *)pte,
+      printf("0x%p: pte=0x%p, pa=0x%p\n", (void *)(va + (i << PXSHIFT(level))), (void *)pte,
              (void *)PTE2PA(pte));
-      vmprint_recursive((pagetable_t)PTE2PA(pte), va + (i << PXSHIFT(level)), level + 1);
+    }
+    if((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      uint64 child = PTE2PA(pte);
+      vmprint_recursive((pagetable_t)child, va + (i << PXSHIFT(level)), level - 1);
     }
   }
 }
@@ -648,7 +645,7 @@ vmprint(pagetable_t pagetable){
     return;
   }
   printf("page table %p:\n", pagetable);
-  vmprint_recursive(pagetable, 0, 1);
+  vmprint_recursive(pagetable, 0, 2);
 }
 #endif
 
