@@ -628,7 +628,7 @@ vmprint_recursive(pagetable_t pagetable, uint64 va, int level)
       for(j = 3; j > level; j--) {
         printf(" ..");
       }
-      printf("0x%p: pte=0x%p, pa=0x%p\n", (void *)(va + (i << PXSHIFT(level))), (void *)pte,
+      printf("%p: pte=%p, pa=%p\n", (void *)(va + (i << PXSHIFT(level))), (void *)pte,
              (void *)PTE2PA(pte));
     }
     if((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
