@@ -8,6 +8,8 @@
 #include "proc.h"
 #include "fs.h"
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
+
 /*
  * the kernel's page table.
  */
@@ -248,8 +250,9 @@ mapsuperpages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm
 void
 uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
-  uint64 a;
+  uint64 a, pa;
   pte_t *pte, *spte;
+  uint fillsz, offset;
   int sz;
 
   if((va % PGSIZE) != 0)
@@ -260,23 +263,29 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
     if((*pte & PTE_V) == 0) {
-      printf("va=%ld pte=%ld\n", a, *pte);
+      printf("va=%p pte=%ld\n", (void *)a, *pte);
       panic("uvmunmap: not mapped");
     }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
 
     // Check if the PTE is mapped to a superpage.
-    if((a % SUPERPGSIZE) == 0) {
-      spte = superwalk(pagetable, a, 0);
-      if(spte == pte) {
-        // This is a superpage mapping.
-        sz = SUPERPGSIZE;
+    spte = superwalk(pagetable, SUPERPGROUNDDOWN(a), 0);
+    if(spte && PTE_LEAF(*spte)) {
+      sz = SUPERPGSIZE;
+
+      // Check if partial free of superpage is required.
+      if(va > SUPERPGROUNDDOWN(a)) {
+        fillsz = min((SUPERPGROUNDUP(a) - va), npages * PGSIZE);
+        offset = va - SUPERPGROUNDDOWN(a);
+        pa = PTE2PA(*spte) + offset;
+        memset((void *)pa, 1, fillsz);
+        continue;
       }
     }
 
     if(do_free) {
-      uint64 pa = PTE2PA(*pte);
+      pa = PTE2PA(*pte);
       if(sz == PGSIZE) {
         kfree((void *)pa);
       } else if(sz == SUPERPGSIZE) {
@@ -326,6 +335,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 {
   char *mem;
   uint64 a;
+  pte_t *spte;
   int sz;
 
   if(newsz < oldsz)
@@ -334,6 +344,15 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
   oldsz = PGROUNDUP(oldsz);
   for(a = oldsz; a < newsz; a += sz) {
     sz = PGSIZE;
+
+    // Check if the address is already mapped to a superpage.
+    spte = superwalk(pagetable, SUPERPGROUNDDOWN(a), 0);
+    if(spte && PTE_LEAF(*spte)) {
+      sz = SUPERPGSIZE;
+      continue;
+    }
+
+    // Check if we can map a superpage.
     if((a % SUPERPGSIZE) == 0 && (newsz - a) >= SUPERPGSIZE) {
       sz = SUPERPGSIZE;
     }
