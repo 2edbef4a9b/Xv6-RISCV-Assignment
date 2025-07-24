@@ -110,9 +110,7 @@ ksteal(int stealer)
 
   total_stolen = 0;
 
-  for(cpu = 0; cpu < NCPU; cpu++){
-    if(cpu == stealer)
-      continue; // Skip self.
+  for(cpu = (stealer + 1) % NCPU; cpu != stealer; cpu = (cpu + 1) % NCPU){
     acquire(&kmem[cpu].lock);
     start = kmem[cpu].freelist;
     end = start;
@@ -177,7 +175,6 @@ kalloc(void)
     // No free pages available, try to steal from another CPU.
     release(&kmem[cpu].lock);
 
-    // Note: If we return directly when ksteal() returns 0, we will fail test2.
     if(!ksteal(cpu))
       return 0; // No pages available after stealing.
     acquire(&kmem[cpu].lock);
